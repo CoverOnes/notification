@@ -1,0 +1,173 @@
+// Command server starts the CoverOnes notification microservice.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/CoverOnes/notification/internal/config"
+	"github.com/CoverOnes/notification/internal/events"
+	"github.com/CoverOnes/notification/internal/handler"
+	"github.com/CoverOnes/notification/internal/platform/logger"
+	"github.com/CoverOnes/notification/internal/store/postgres"
+	"github.com/redis/go-redis/v9"
+)
+
+func main() {
+	healthcheck := flag.Bool("healthcheck", false, "perform a liveness check against /healthz and exit 0/1")
+	flag.Parse()
+
+	// Docker HEALTHCHECK mode: GET /healthz and exit immediately.
+	if *healthcheck {
+		if err := runHealthCheck(); err != nil {
+			slog.Error("healthcheck failed", "err", err)
+			os.Exit(1)
+		}
+
+		os.Exit(0)
+	}
+
+	if err := run(); err != nil {
+		slog.Error("server exited with error", "err", err)
+		os.Exit(1)
+	}
+}
+
+// runHealthCheck issues a GET to the local /healthz endpoint.
+func runHealthCheck() error {
+	port := os.Getenv("NOTIFICATION_PORT")
+	if port == "" {
+		port = "8084"
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%s/healthz", port)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.Get(url) //nolint:noctx // healthcheck is a one-shot process; no request context needed
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", url, err)
+	}
+
+	defer resp.Body.Close() //nolint:errcheck // best-effort close on healthcheck response
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
+	}
+
+	return nil
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	// Logger — JSON to stdout (CONVENTIONS §5).
+	log := logger.New(cfg.LogLevel)
+	slog.SetDefault(log)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Postgres pool (CONVENTIONS §12).
+	// cfg.PostgresSchema is "" by default (public schema); set NOTIFICATION_DB_SCHEMA
+	// to isolate this service within a shared Aiven database.
+	pool, err := postgres.NewPool(ctx, cfg.PostgresDSN, cfg.PostgresSchema)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+
+	defer pool.Close()
+
+	slog.Info("postgres connected")
+
+	// Redis client (optional — nil means consumer disabled + in-process rate limiter).
+	var redisClient *redis.Client
+
+	if cfg.RedisURL != "" {
+		opts, parseErr := redis.ParseURL(cfg.RedisURL)
+		if parseErr != nil {
+			return fmt.Errorf("parse redis url: %w", parseErr)
+		}
+
+		redisClient = redis.NewClient(opts)
+
+		pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
+		defer pingCancel()
+
+		if pingErr := redisClient.Ping(pingCtx).Err(); pingErr != nil {
+			slog.Warn("redis ping failed; event consumer and rate limiting will use noop/fallback", "err", pingErr)
+			redisClient = nil
+		} else {
+			slog.Info("redis connected")
+		}
+	}
+
+	// Store layer.
+	notifStore := postgres.NewNotificationStore(pool)
+
+	// Redis event consumer — runs in background goroutine with independent context.
+	// context.Background() derivative ensures the consumer is not canceled by
+	// HTTP request context expiry (goroutine context rule — backend-security-design §goroutine).
+	consumerCtx, consumerCancel := context.WithCancel(context.Background())
+	defer consumerCancel()
+
+	consumer := events.NewConsumer(redisClient, notifStore)
+
+	go consumer.Run(consumerCtx)
+
+	// Router.
+	r := handler.NewRouter(handler.RouterConfig{
+		Store: notifStore,
+		Pool:  pool,
+		Redis: redisClient,
+	})
+
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      r,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// Graceful shutdown.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		slog.Info("server starting", "addr", srv.Addr)
+
+		if listenErr := srv.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
+			slog.Error("server listen error", "err", listenErr)
+			os.Exit(1)
+		}
+	}()
+
+	<-quit
+	slog.Info("shutting down gracefully")
+
+	// Cancel consumer first, then HTTP server.
+	consumerCancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	if shutdownErr := srv.Shutdown(shutdownCtx); shutdownErr != nil {
+		return fmt.Errorf("server shutdown: %w", shutdownErr)
+	}
+
+	slog.Info("server stopped")
+
+	return nil
+}
