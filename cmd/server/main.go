@@ -82,7 +82,12 @@ func run() error {
 	// Postgres pool (CONVENTIONS §12).
 	// cfg.PostgresSchema is "" by default (public schema); set NOTIFICATION_DB_SCHEMA
 	// to isolate this service within a shared Aiven database.
-	pool, err := postgres.NewPool(ctx, cfg.PostgresDSN, cfg.PostgresSchema)
+	// cfg.DBMaxConns/DBMinConns are configurable via NOTIFICATION_DB_MAX_CONNS/DB_MIN_CONNS
+	// (default 10/2) to allow tuning per-service connection budgets on shared Aiven plans.
+	pool, err := postgres.NewPool(ctx, cfg.PostgresDSN, cfg.PostgresSchema, postgres.PoolConfig{
+		MaxConns: int32(cfg.DBMaxConns), // validated ≥ 0 by config.validate(); safe to int32
+		MinConns: int32(cfg.DBMinConns), // validated ≥ 0 by config.validate(); safe to int32
+	})
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
