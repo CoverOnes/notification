@@ -1,0 +1,61 @@
+package httpx
+
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+
+	"github.com/CoverOnes/notification/internal/domain"
+	"github.com/gin-gonic/gin"
+)
+
+// ErrorResponse is the machine-readable error envelope.
+type ErrorResponse struct {
+	Error ErrorBody `json:"error"`
+}
+
+// ErrorBody carries the stable code, human message, and optional details.
+type ErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Details any    `json:"details,omitempty"`
+}
+
+// Err sends a structured error response, translating domain errors to HTTP codes.
+func Err(c *gin.Context, err error) {
+	code, status, message, details := translate(err)
+	c.JSON(status, ErrorResponse{Error: ErrorBody{
+		Code:    code,
+		Message: message,
+		Details: details,
+	}})
+}
+
+// ErrCode sends a raw code/status/message triple (for handler-generated errors
+// that don't map cleanly to domain sentinels).
+func ErrCode(c *gin.Context, status int, code, message string, details ...any) {
+	var d any
+	if len(details) > 0 {
+		d = details[0]
+	}
+
+	c.JSON(status, ErrorResponse{Error: ErrorBody{
+		Code:    code,
+		Message: message,
+		Details: d,
+	}})
+}
+
+// translate maps domain / sentinel errors to HTTP status + machine code.
+//
+//nolint:unparam // details: reserved for structured error payload; always nil today but part of the stable contract
+func translate(err error) (code string, status int, message string, details any) {
+	switch {
+	case errors.Is(err, domain.ErrNotificationNotFound):
+		return "NOTIFICATION_NOT_FOUND", http.StatusNotFound, "notification not found", nil
+
+	default:
+		slog.Error("unhandled internal error", "err", err)
+		return "INTERNAL_ERROR", http.StatusInternalServerError, "internal server error", nil
+	}
+}
