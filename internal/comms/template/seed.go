@@ -15,7 +15,7 @@ import (
 // any variable the caller does not supply, so the documented vars below are the
 // contract for each template:
 //
-//	email_verify : .verifyURL .token
+//	email_verify : .verifyURL
 //	phone_otp    : .code .ttlMinutes
 //
 // The email_verify body ports the user service's verification email content
@@ -31,8 +31,6 @@ var DefaultTemplates = []comms.Template{
 			`<p>Please verify your email address by clicking the button below:</p>` +
 			`<p><a href="{{.verifyURL}}">Verify my email</a></p>` +
 			`<p>If the button does not work, copy this link into your browser:<br>{{.verifyURL}}</p>` +
-			`<p>Alternatively, submit this token to the verify-email endpoint ` +
-			`(POST /v1/auth/verify-email):<br><code>{{.token}}</code></p>` +
 			`<p>This link is single-use and expires soon. If you did not create this ` +
 			`account you can safely ignore this message.</p>`,
 	},
