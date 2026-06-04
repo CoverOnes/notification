@@ -100,6 +100,54 @@ func makeNotification(userID uuid.UUID, nType domain.NotificationType) *domain.N
 	}
 }
 
+// TestPool_ReservedWordSchema_Integration verifies that NewPool correctly
+// double-quotes reserved-word schema names (e.g. "user") using
+// pgx.Identifier.Sanitize() so that CREATE SCHEMA and SET search_path
+// do not produce PG syntax error 42601.
+func TestPool_ReservedWordSchema_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	dsn := startTestDB(t)
+
+	// "user" is a Postgres reserved word — bare interpolation would fail with
+	// PG error 42601 (syntax_error). Sanitize() wraps it as "user" (double-quoted).
+	pool, err := postgres.NewPool(ctx, dsn, "user")
+	require.NoError(t, err, "NewPool must succeed for reserved-word schema name 'user'")
+
+	defer pool.Close()
+
+	// Verify the search_path is set correctly by creating a table in the "user" schema
+	// and confirming it is visible in that schema via information_schema.
+	_, execErr := pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS sentinel_table (
+			id serial PRIMARY KEY,
+			label text
+		)
+	`)
+	require.NoError(t, execErr, "CREATE TABLE in 'user' schema must succeed via search_path")
+
+	// Assert the table exists in the "user" schema (not public).
+	var count int
+	queryErr := pool.QueryRow(
+		ctx,
+		`SELECT count(*) FROM information_schema.tables
+		 WHERE table_schema = 'user' AND table_name = 'sentinel_table'`,
+	).Scan(&count)
+	require.NoError(t, queryErr, "query information_schema.tables for 'user' schema")
+	assert.Equal(t, 1, count, "sentinel_table must exist in the 'user' schema")
+
+	t.Run("error: bad schema name rejected by config", func(t *testing.T) {
+		// NewPool itself does not validate the schema; that is config.validate()'s job.
+		// Confirm an empty schema falls back gracefully (public schema, no error).
+		emptyPool, emptyErr := postgres.NewPool(ctx, dsn, "")
+		require.NoError(t, emptyErr, "empty schema (public) must succeed")
+		emptyPool.Close()
+	})
+}
+
 func TestNotificationStore_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

@@ -29,6 +29,15 @@ type Config struct {
 	// Only alphanumeric characters and underscores are allowed ([a-zA-Z0-9_]+).
 	PostgresSchema string `mapstructure:"postgres_schema"`
 
+	// DBMaxConns is the maximum number of connections in the pgxpool (default: 10).
+	// Tune down when many services share a small Aiven plan.
+	// Env: NOTIFICATION_DB_MAX_CONNS
+	DBMaxConns int `mapstructure:"db_max_conns"`
+
+	// DBMinConns is the minimum number of idle connections kept in the pgxpool (default: 2).
+	// Env: NOTIFICATION_DB_MIN_CONNS
+	DBMinConns int `mapstructure:"db_min_conns"`
+
 	// Redis (optional — nil Redis = consumer disabled + in-process rate limiter)
 	RedisURL string `mapstructure:"redis_url"`
 
@@ -90,6 +99,8 @@ func Load() (*Config, error) {
 		"port":              "NOTIFICATION_PORT",
 		"postgres_dsn":      "NOTIFICATION_POSTGRES_DSN",
 		"postgres_schema":   "NOTIFICATION_DB_SCHEMA",
+		"db_max_conns":      "NOTIFICATION_DB_MAX_CONNS",
+		"db_min_conns":      "NOTIFICATION_DB_MIN_CONNS",
 		"redis_url":         "NOTIFICATION_REDIS_URL",
 		"log_level":         "NOTIFICATION_LOG_LEVEL",
 		"env":               "NOTIFICATION_ENV",
@@ -124,6 +135,8 @@ func Load() (*Config, error) {
 	v.SetDefault("port", 8084)
 	v.SetDefault("log_level", "INFO")
 	v.SetDefault("env", "development")
+	v.SetDefault("db_max_conns", 10)
+	v.SetDefault("db_min_conns", 2)
 	v.SetDefault("comms_enabled", false)
 	v.SetDefault("comms_send_timeout", 10*time.Second)
 	v.SetDefault("email_provider", "stub")
@@ -165,6 +178,18 @@ func (c *Config) validate() error {
 
 	if c.PostgresSchema != "" && !schemaNameRe.MatchString(c.PostgresSchema) {
 		errs = append(errs, "NOTIFICATION_DB_SCHEMA must contain only [a-zA-Z0-9_] characters")
+	}
+
+	if c.DBMaxConns < 0 {
+		errs = append(errs, "NOTIFICATION_DB_MAX_CONNS must be >= 0 (0 = use default of 10)")
+	}
+
+	if c.DBMinConns < 0 {
+		errs = append(errs, "NOTIFICATION_DB_MIN_CONNS must be >= 0 (0 = use default of 2)")
+	}
+
+	if c.DBMaxConns > 0 && c.DBMinConns > 0 && c.DBMinConns > c.DBMaxConns {
+		errs = append(errs, "NOTIFICATION_DB_MIN_CONNS must be <= NOTIFICATION_DB_MAX_CONNS")
 	}
 
 	errs = append(errs, c.validateComms()...)
