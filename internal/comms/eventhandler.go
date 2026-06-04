@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 )
 
 // EventHandler processes comms.send_requested events from Redis. It HMAC-verifies
@@ -36,6 +37,18 @@ func (h *EventHandler) Handle(ctx context.Context, payload []byte) {
 	if !VerifySendRequested(&evt, h.hmacSecret) {
 		// Forged or unsigned — DROP. Do not log the data (may carry PII).
 		slog.Warn("comms event: signature verification failed; dropping forged event", "event_id", evt.EventID)
+
+		return
+	}
+
+	if !IsSendRequestedFresh(&evt, time.Now()) {
+		// Validly signed but stale or future-dated — possible capture-replay
+		// (CWE-294). DROP; the HMAC alone does not bound freshness.
+		slog.Warn(
+			"comms event: stale/future-dated event; dropping (replay guard)",
+			"event_id", evt.EventID,
+			"occurred_at", evt.OccurredAt,
+		)
 
 		return
 	}

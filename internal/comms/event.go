@@ -105,6 +105,27 @@ func VerifySendRequested(evt *SendRequestedEvent, secret []byte) bool {
 	return hmac.Equal([]byte(want), []byte(evt.Signature))
 }
 
+// maxEventAge bounds replay of validly-signed comms.send_requested events. The
+// HMAC proves authenticity but NOT freshness; without a time bound a captured
+// envelope replays forever once its idempotency_key dedup row is purged at the
+// send_log 30-day TTL. Accepting only recent events closes the window to minutes.
+// CWE-294 (authentication bypass by capture-replay).
+const maxEventAge = 5 * time.Minute
+
+// eventClockSkew tolerates small future-dating of occurredAt from clock drift
+// between the publisher and this consumer.
+const eventClockSkew = time.Minute
+
+// IsSendRequestedFresh reports whether evt.OccurredAt sits within the accepted
+// freshness window relative to now: not older than maxEventAge (stale → replay)
+// and not future-dated beyond eventClockSkew. now is injected so the check is a
+// pure, independently testable function.
+func IsSendRequestedFresh(evt *SendRequestedEvent, now time.Time) bool {
+	age := now.Sub(evt.OccurredAt)
+
+	return age <= maxEventAge && age >= -eventClockSkew
+}
+
 // ToSendRequest converts the event data into a SendRequest. The event's eventId
 // is used as a secondary idempotency guard: if the data carries no idempotency
 // key, the eventId is used so a replayed event still dedups.

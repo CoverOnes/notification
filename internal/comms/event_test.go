@@ -40,6 +40,33 @@ func TestSendRequested_signVerify(t *testing.T) {
 	assert.True(t, comms.VerifySendRequested(evt, secret), "valid signature must verify")
 }
 
+// TestIsSendRequestedFresh proves the M-1 replay guard: a validly-signed event
+// is only accepted within the freshness window, so a captured envelope cannot be
+// replayed after the idempotency dedup row expires (CWE-294).
+func TestIsSendRequestedFresh(t *testing.T) {
+	now := time.Now().UTC()
+
+	cases := []struct {
+		name       string
+		occurredAt time.Time
+		want       bool
+	}{
+		{"fresh now", now, true},
+		{"4 min old ok", now.Add(-4 * time.Minute), true},
+		{"6 min old stale replay", now.Add(-6 * time.Minute), false},
+		{"30s future ok skew", now.Add(30 * time.Second), true},
+		{"2 min future rejected", now.Add(2 * time.Minute), false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			evt := makeEvent()
+			evt.OccurredAt = tc.occurredAt
+			assert.Equal(t, tc.want, comms.IsSendRequestedFresh(evt, now))
+		})
+	}
+}
+
 func TestSendRequested_verifyFails(t *testing.T) {
 	secret := []byte("a-32-char-min-shared-event-secret!")
 
