@@ -13,11 +13,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/CoverOnes/notification/internal/comms"
+	commsemail "github.com/CoverOnes/notification/internal/comms/email"
+	commsprovider "github.com/CoverOnes/notification/internal/comms/provider"
+	commssendlog "github.com/CoverOnes/notification/internal/comms/sendlog"
+	commssms "github.com/CoverOnes/notification/internal/comms/sms"
+	commstemplate "github.com/CoverOnes/notification/internal/comms/template"
 	"github.com/CoverOnes/notification/internal/config"
 	"github.com/CoverOnes/notification/internal/events"
 	"github.com/CoverOnes/notification/internal/handler"
 	"github.com/CoverOnes/notification/internal/platform/logger"
 	"github.com/CoverOnes/notification/internal/store/postgres"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -116,21 +123,51 @@ func run() error {
 	// Store layer.
 	notifStore := postgres.NewNotificationStore(pool)
 
+	// Comms module — DORMANT by default (NOTIFICATION_COMMS_ENABLED=false). When
+	// disabled, commsSvc is nil: no comms routes, no comms event subscription —
+	// the service behaves exactly as the pure-inbox service did.
+	var commsSvc comms.CommsService
+
+	var commsEventHandler events.CommsEventHandler
+
+	if cfg.Comms.Enabled {
+		svc, err := buildCommsService(ctx, pool, cfg)
+		if err != nil {
+			return fmt.Errorf("init comms module: %w", err)
+		}
+
+		commsSvc = svc
+		commsEventHandler = comms.NewEventHandler(svc, []byte(cfg.EventHMACSecret))
+
+		slog.Info(
+			"comms module enabled",
+			"email_provider", cfg.Comms.EmailProvider,
+			"sms_provider", cfg.Comms.SMSProvider,
+		)
+	}
+
 	// Redis event consumer — runs in background goroutine with independent context.
 	// context.Background() derivative ensures the consumer is not canceled by
 	// HTTP request context expiry (goroutine context rule — backend-security-design §goroutine).
 	consumerCtx, consumerCancel := context.WithCancel(context.Background())
 	defer consumerCancel()
 
-	consumer := events.NewConsumer(redisClient, notifStore)
+	var consumer *events.Consumer
+	if commsEventHandler != nil {
+		consumer = events.NewConsumerWithComms(redisClient, notifStore, commsEventHandler)
+	} else {
+		consumer = events.NewConsumer(redisClient, notifStore)
+	}
 
 	go consumer.Run(consumerCtx)
 
 	// Router.
 	r := handler.NewRouter(handler.RouterConfig{
-		Store: notifStore,
-		Pool:  pool,
-		Redis: redisClient,
+		Store:        notifStore,
+		Pool:         pool,
+		Redis:        redisClient,
+		CommsService: commsSvc,
+		S2SToken:     cfg.Comms.S2SToken,
 	})
 
 	srv := &http.Server{
@@ -170,4 +207,60 @@ func run() error {
 	slog.Info("server stopped")
 
 	return nil
+}
+
+// buildCommsService constructs the comms orchestrator and its stores/providers
+// from config, and seeds the default templates. Secrets are sourced from config
+// (env-only); the provider factories fail fast on a misconfigured real provider.
+func buildCommsService(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) (*comms.Service, error) {
+	templateStore := commstemplate.NewStore(pool)
+	sendLogStore := commssendlog.NewStore(pool)
+	renderer := commstemplate.New()
+
+	// Seed default templates (idempotent — bumps version, never duplicates).
+	if err := commstemplate.Seed(ctx, templateStore); err != nil {
+		return nil, fmt.Errorf("seed comms templates: %w", err)
+	}
+
+	emailSender, err := commsemail.NewEmailSender(&commsemail.Config{
+		Provider:    cfg.Comms.EmailProvider,
+		Host:        cfg.Comms.EmailSMTPHost,
+		Port:        cfg.Comms.EmailSMTPPort,
+		Username:    cfg.Comms.EmailSMTPUser,
+		Password:    cfg.Comms.EmailSMTPPass,
+		From:        cfg.Comms.EmailFrom,
+		AppBaseURL:  cfg.Comms.EmailAppBaseURL,
+		SendTimeout: cfg.Comms.SendTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("init email sender: %w", err)
+	}
+
+	smsSender, err := commssms.NewSMSSender(&commssms.Config{
+		Provider:    cfg.Comms.SMSProvider,
+		SenderID:    cfg.Comms.SMSSenderID,
+		Region:      cfg.Comms.SMSRegion,
+		APIKey:      cfg.Comms.SMSAPIKey,
+		APISecret:   cfg.Comms.SMSAPISecret,
+		SendTimeout: cfg.Comms.SendTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("init sms sender: %w", err)
+	}
+
+	// Provider-settings store is wired (admin/non-secret knobs); not yet consulted
+	// in the Phase 0 send path (provider is selected by config). Constructed here
+	// so the table has a typed accessor and the wiring is exercised.
+	_ = commsprovider.NewStore(pool)
+
+	return comms.NewService(&comms.ServiceDeps{
+		Templates:     templateStore,
+		Renderer:      renderer,
+		SendLog:       sendLogStore,
+		EmailSender:   emailSender,
+		SMSSender:     smsSender,
+		EmailProvider: cfg.Comms.EmailProvider,
+		SMSProvider:   cfg.Comms.SMSProvider,
+		SendTimeout:   cfg.Comms.SendTimeout,
+	}), nil
 }

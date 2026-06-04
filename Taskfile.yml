@@ -81,11 +81,17 @@ tasks:
 
   db:gc:
     desc: |
-      Purge notifications older than 90 days (CONVENTIONS §15 / backend-security-design §1.3).
-      90-day retention documented in migrations/000001_init_notifications.up.sql.
+      Purge expired observability rows (CONVENTIONS §15 / backend-security-design §1.3).
       Run as a scheduled job (cron / Kubernetes CronJob) in production, e.g. nightly.
       Requires: NOTIFICATION_POSTGRES_DSN env var.
+
+      Retention windows (documented in each table's migration comment):
+        * notifications              — 90 days (migrations/000001_init_notifications.up.sql)
+        * comms_send_log             — 30 days (migrations/000004_comms_send_log.up.sql)
+        * comms_delivery_receipts    — 30 days (migrations/000005_comms_delivery_receipts.up.sql)
     cmds:
       - |
         psql "$NOTIFICATION_POSTGRES_DSN" \
-          -c "DELETE FROM notifications WHERE created_at < NOW() - INTERVAL '90 days';"
+          -c "DELETE FROM notifications WHERE created_at < NOW() - INTERVAL '90 days';" \
+          -c "DELETE FROM comms_send_log WHERE created_at < NOW() - INTERVAL '30 days';" \
+          -c "DELETE FROM comms_delivery_receipts WHERE received_at < NOW() - INTERVAL '30 days';"
