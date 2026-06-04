@@ -12,9 +12,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// subscribedChannels is the set of Redis pub/sub channels this service consumes.
-// CONVENTIONS §14: dotted lowercase <domain>.<event>.
-var subscribedChannels = []string{
+// inboxChannels is the set of Redis pub/sub channels mapped into the in-app
+// inbox. CONVENTIONS §14: dotted lowercase <domain>.<event>.
+var inboxChannels = []string{
 	"kyc.tier_changed",
 	"user.suspended",
 	"marketplace.bid_received",
@@ -23,15 +23,48 @@ var subscribedChannels = []string{
 	"workspace.contract_signed",
 }
 
-// Consumer subscribes to Redis event channels and maps them to Notifications.
-type Consumer struct {
-	rdb   *redis.Client
-	store store.NotificationStore
+// commsSendRequestedChannel is the comms-module event channel. It is only
+// subscribed when the comms module is enabled (a non-nil commsHandler is wired).
+const commsSendRequestedChannel = "comms.send_requested"
+
+// CommsEventHandler handles a verified comms.send_requested payload. It is
+// satisfied by *comms.EventHandler. Declared here so the events package does not
+// hard-depend on the comms module when comms is dormant.
+type CommsEventHandler interface {
+	Handle(ctx context.Context, payload []byte)
 }
 
-// NewConsumer creates a Consumer. If rdb is nil the consumer is a no-op (dev mode).
+// Consumer subscribes to Redis event channels and maps them to Notifications.
+// When commsHandler is non-nil it ALSO subscribes comms.send_requested and routes
+// that channel to the comms module (HMAC-verified there); inbox channels are
+// unaffected. When commsHandler is nil the consumer behaves exactly as before.
+type Consumer struct {
+	rdb          *redis.Client
+	store        store.NotificationStore
+	commsHandler CommsEventHandler
+}
+
+// NewConsumer creates a Consumer for the inbox channels only (comms dormant).
+// If rdb is nil the consumer is a no-op (dev mode).
 func NewConsumer(rdb *redis.Client, s store.NotificationStore) *Consumer {
 	return &Consumer{rdb: rdb, store: s}
+}
+
+// NewConsumerWithComms creates a Consumer that additionally subscribes
+// comms.send_requested and routes it to commsHandler. Used only when the comms
+// module is enabled.
+func NewConsumerWithComms(rdb *redis.Client, s store.NotificationStore, commsHandler CommsEventHandler) *Consumer {
+	return &Consumer{rdb: rdb, store: s, commsHandler: commsHandler}
+}
+
+// channels returns the full subscribe set for this consumer (inbox + optionally
+// the comms channel).
+func (c *Consumer) channels() []string {
+	if c.commsHandler == nil {
+		return inboxChannels
+	}
+
+	return append(append([]string{}, inboxChannels...), commsSendRequestedChannel)
 }
 
 // Run starts the subscription loop. Blocks until ctx is canceled.
@@ -46,14 +79,16 @@ func (c *Consumer) Run(ctx context.Context) {
 		return
 	}
 
-	sub := c.rdb.Subscribe(ctx, subscribedChannels...)
+	channels := c.channels()
+
+	sub := c.rdb.Subscribe(ctx, channels...)
 	defer func() {
 		if err := sub.Close(); err != nil {
 			slog.Warn("consumer: close subscription error", "err", err)
 		}
 	}()
 
-	slog.Info("redis consumer started", "channels", subscribedChannels)
+	slog.Info("redis consumer started", "channels", channels)
 
 	ch := sub.Channel()
 
@@ -87,6 +122,16 @@ func (c *Consumer) handle(ctx context.Context, msg *redis.Message) {
 			"channel", msg.Channel,
 			"size", len(msg.Payload),
 		)
+
+		return
+	}
+
+	// Route the comms-module channel to the comms handler (HMAC-verified there).
+	// Inbox channels fall through to the notification mapping path below.
+	if msg.Channel == commsSendRequestedChannel {
+		if c.commsHandler != nil {
+			c.commsHandler.Handle(ctx, []byte(msg.Payload))
+		}
 
 		return
 	}

@@ -82,6 +82,29 @@ func NewIPRateLimiter(rdb *redis.Client, limit int, window time.Duration) *RateL
 	}
 }
 
+// NewServiceRateLimiter builds a limiter keyed by the authenticated caller
+// service id (set by RequireServiceIdentity), falling back to client IP when no
+// service id is present. Used to best-effort cap a single S2S caller's send rate
+// so one compromised caller cannot flood the send endpoint
+// (backend-security-design §5.5).
+func NewServiceRateLimiter(rdb *redis.Client, limit int, window time.Duration) *RateLimiter {
+	r := rate.Limit(float64(limit) / window.Seconds())
+
+	return &RateLimiter{
+		rdb:    rdb,
+		limit:  limit,
+		window: window,
+		keyFunc: func(c *gin.Context) string {
+			if sid := ServiceIDFromCtx(c); sid != "" {
+				return fmt.Sprintf("notification:rl:svc:%s", sid)
+			}
+
+			return fmt.Sprintf("notification:rl:svc-ip:%s", c.ClientIP())
+		},
+		fallback: newFallbackLimiter(r, fallbackBurst),
+	}
+}
+
 // Handler returns the Gin middleware function.
 func (rl *RateLimiter) Handler() gin.HandlerFunc {
 	return func(c *gin.Context) {

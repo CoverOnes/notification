@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/CoverOnes/notification/internal/comms"
 	"github.com/CoverOnes/notification/internal/platform/health"
 	"github.com/CoverOnes/notification/internal/platform/middleware"
 	"github.com/CoverOnes/notification/internal/store"
@@ -17,6 +18,12 @@ type RouterConfig struct {
 	Store store.NotificationStore
 	Pool  *pgxpool.Pool
 	Redis *redis.Client // may be nil in dev
+
+	// Comms wiring — only set when NOTIFICATION_COMMS_ENABLED is true. When
+	// CommsService is nil, NO comms routes and NO S2S middleware are registered
+	// (the module is dormant and the service behaves exactly as before).
+	CommsService comms.CommsService
+	S2SToken     string
 }
 
 // NewRouter builds and returns the configured Gin engine.
@@ -59,6 +66,25 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	api.GET("/unread-count", notifH.UnreadCount)
 	api.POST("/read-all", notifH.MarkAllRead)
 	api.POST("/:id/read", notifH.MarkRead)
+
+	// Comms module (S2S) routes — registered ONLY when the module is enabled.
+	// DENY-BY-DEFAULT: every route is behind RequireServiceIdentity. These
+	// endpoints are an arbitrary-send primitive and MUST NOT be proxied from the
+	// public edge by the gateway (backend-security-design §5.5).
+	if cfg.CommsService != nil {
+		commsH := NewCommsHandler(cfg.CommsService)
+
+		// Per-caller best-effort rate limit (keyed by service id / IP) on top of
+		// the global IP limiter, so a single compromised caller cannot flood sends.
+		commsRL := middleware.NewServiceRateLimiter(cfg.Redis, 300, time.Minute)
+
+		commsGroup := r.Group("/v1/comms")
+		commsGroup.Use(middleware.RequireServiceIdentity(cfg.S2SToken))
+		commsGroup.Use(commsRL.Handler())
+
+		commsGroup.POST("/send", commsH.Send)
+		commsGroup.POST("/receipts/:provider", commsH.Receipts)
+	}
 
 	return r
 }
