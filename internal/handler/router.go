@@ -25,6 +25,13 @@ type RouterConfig struct {
 	// it is non-empty in non-dev.
 	GatewayHMACSecret string
 
+	// UserRateLimitPerMin is the per-authenticated-user rate limit (requests/min).
+	// 0 = disabled. When > 0, UserRateLimitBurst must also be > 0.
+	UserRateLimitPerMin int
+
+	// UserRateLimitBurst is the per-user token-bucket burst allowance.
+	UserRateLimitBurst int
+
 	// Comms wiring — only set when NOTIFICATION_COMMS_ENABLED is true. When
 	// CommsService is nil, NO comms routes and NO S2S middleware are registered
 	// (the module is dormant and the service behaves exactly as before).
@@ -72,6 +79,15 @@ func NewRouter(cfg *RouterConfig) *gin.Engine {
 	// S2S-only (X-Service-Token) and is intentionally NOT proxied from the gateway.
 	api.Use(middleware.VerifyGatewaySignature(cfg.GatewayHMACSecret))
 	api.Use(middleware.RequireValidIdentity())
+
+	// Per-authenticated-user rate limiter — mounted AFTER VerifyGatewaySignature +
+	// RequireValidIdentity so that identity.UserID is gateway-verified and in
+	// context before the limiter reads it. Only registered when perMin > 0.
+	if cfg.UserRateLimitPerMin > 0 {
+		userRL := middleware.NewUserRateLimiter(cfg.UserRateLimitPerMin, cfg.UserRateLimitBurst)
+		api.Use(userRL.Handler())
+	}
+
 	api.Use(middleware.RequireTier(0)) // CONVENTIONS §10: explicit min-tier declaration per protected route
 
 	api.GET("", notifH.List)

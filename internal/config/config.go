@@ -59,6 +59,16 @@ type Config struct {
 	// Env: NOTIFICATION_GATEWAY_HMAC_SECRET
 	GatewayHMACSecret string `mapstructure:"gateway_hmac_secret"`
 
+	// UserRateLimitPerMin is the per-authenticated-user token-bucket rate limit
+	// (requests per minute). Set to 0 to disable the per-user limiter entirely.
+	// Default: 120. Env: NOTIFICATION_USER_RATE_LIMIT_PER_MIN
+	UserRateLimitPerMin int `mapstructure:"user_rate_limit_per_min"`
+
+	// UserRateLimitBurst is the per-user token-bucket burst allowance.
+	// Must be > 0 when UserRateLimitPerMin > 0. Default: 20.
+	// Env: NOTIFICATION_USER_RATE_LIMIT_BURST
+	UserRateLimitBurst int `mapstructure:"user_rate_limit_burst"`
+
 	// Comms holds the dormant-by-default outbound-messaging (comms) module config.
 	Comms CommsConfig `mapstructure:",squash"`
 }
@@ -104,16 +114,18 @@ func Load() (*Config, error) {
 
 	//nolint:gosec // G101 false positive: these are env-var NAMES (e.g. NOTIFICATION_S2S_TOKEN, EVENT_HMAC_SECRET), not credential values
 	bindings := map[string]string{
-		"port":                "NOTIFICATION_PORT",
-		"postgres_dsn":        "NOTIFICATION_POSTGRES_DSN",
-		"postgres_schema":     "NOTIFICATION_DB_SCHEMA",
-		"db_max_conns":        "NOTIFICATION_DB_MAX_CONNS",
-		"db_min_conns":        "NOTIFICATION_DB_MIN_CONNS",
-		"redis_url":           "NOTIFICATION_REDIS_URL",
-		"log_level":           "NOTIFICATION_LOG_LEVEL",
-		"env":                 "NOTIFICATION_ENV",
-		"event_hmac_secret":   "EVENT_HMAC_SECRET",
-		"gateway_hmac_secret": "NOTIFICATION_GATEWAY_HMAC_SECRET",
+		"port":                    "NOTIFICATION_PORT",
+		"postgres_dsn":            "NOTIFICATION_POSTGRES_DSN",
+		"postgres_schema":         "NOTIFICATION_DB_SCHEMA",
+		"db_max_conns":            "NOTIFICATION_DB_MAX_CONNS",
+		"db_min_conns":            "NOTIFICATION_DB_MIN_CONNS",
+		"redis_url":               "NOTIFICATION_REDIS_URL",
+		"log_level":               "NOTIFICATION_LOG_LEVEL",
+		"env":                     "NOTIFICATION_ENV",
+		"event_hmac_secret":       "EVENT_HMAC_SECRET",
+		"gateway_hmac_secret":     "NOTIFICATION_GATEWAY_HMAC_SECRET",
+		"user_rate_limit_per_min": "NOTIFICATION_USER_RATE_LIMIT_PER_MIN",
+		"user_rate_limit_burst":   "NOTIFICATION_USER_RATE_LIMIT_BURST",
 
 		// Comms module (dormant by default).
 		"comms_enabled":      "NOTIFICATION_COMMS_ENABLED",
@@ -146,6 +158,8 @@ func Load() (*Config, error) {
 	v.SetDefault("env", "development")
 	v.SetDefault("db_max_conns", 10)
 	v.SetDefault("db_min_conns", 2)
+	v.SetDefault("user_rate_limit_per_min", 120)
+	v.SetDefault("user_rate_limit_burst", 20)
 	v.SetDefault("comms_enabled", false)
 	v.SetDefault("comms_send_timeout", 10*time.Second)
 	v.SetDefault("email_provider", "stub")
@@ -203,6 +217,7 @@ func (c *Config) validate() error {
 
 	errs = append(errs, c.validateEventHMAC()...)
 	errs = append(errs, c.validateGatewayHMAC()...)
+	errs = append(errs, c.validateUserRateLimit()...)
 	errs = append(errs, c.validateComms()...)
 
 	if len(errs) > 0 {
@@ -343,6 +358,23 @@ func (c *Config) validateCommsNonDev(emailProv, smsProv string) []string {
 		if c.Comms.SMSRegion == "" {
 			errs = append(errs, fmt.Sprintf("NOTIFICATION_SMS_REGION is required for the %s provider", smsProv))
 		}
+	}
+
+	return errs
+}
+
+// validateUserRateLimit enforces that the per-user rate-limit settings are
+// internally consistent: perMin >= 0 (0 = disabled); burst MUST be > 0 when
+// perMin > 0 (a positive limit with zero burst means no request can ever pass).
+func (c *Config) validateUserRateLimit() []string {
+	var errs []string
+
+	if c.UserRateLimitPerMin < 0 {
+		errs = append(errs, "NOTIFICATION_USER_RATE_LIMIT_PER_MIN must be >= 0 (0 = disabled)")
+	}
+
+	if c.UserRateLimitPerMin > 0 && c.UserRateLimitBurst <= 0 {
+		errs = append(errs, "NOTIFICATION_USER_RATE_LIMIT_BURST must be > 0 when NOTIFICATION_USER_RATE_LIMIT_PER_MIN > 0")
 	}
 
 	return errs

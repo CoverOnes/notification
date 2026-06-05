@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/CoverOnes/notification/internal/platform/httpx"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
@@ -21,6 +23,11 @@ const fallbackBurst = 10
 // fallbackLRUCap is the maximum number of unique keys tracked by the in-process
 // fallback limiter. Bounded LRU prevents memory-DoS from IP rotation attacks.
 const fallbackLRUCap = 100_000
+
+// userFallbackLRUCap is the maximum number of unique user keys tracked by the
+// per-user in-process limiter. Bounded LRU prevents memory-exhaustion DoS under
+// account-rotation attacks.
+const userFallbackLRUCap = 100_000
 
 // RateLimiter is a Redis-backed fixed-window rate limiter with an in-process
 // token-bucket fallback that engages when Redis errors (fails safe, not open).
@@ -163,4 +170,77 @@ func (rl *RateLimiter) increment(ctx context.Context, key string) (int, error) {
 	}
 
 	return int(incr.Val()), nil
+}
+
+// UserRateLimiter is a pure in-process per-authenticated-user token-bucket
+// limiter. It is keyed on the verified user_id extracted from context (set by
+// RequireValidIdentity) — never on a raw header — so the key is always
+// gateway-verified and cannot be spoofed by a client.
+//
+// The LRU is bounded at userFallbackLRUCap to prevent memory-exhaustion DoS
+// under account-rotation attacks.
+type UserRateLimiter struct {
+	mu          sync.Mutex
+	buckets     *lru.Cache[string, *rate.Limiter]
+	r           rate.Limit
+	burst       int
+	limitPerMin int
+}
+
+// NewUserRateLimiter constructs a UserRateLimiter allowing limitPerMin requests
+// per minute with the given burst allowance.
+func NewUserRateLimiter(limitPerMin, burst int) *UserRateLimiter {
+	r := rate.Limit(float64(limitPerMin) / 60.0)
+	cache, err := lru.New[string, *rate.Limiter](userFallbackLRUCap)
+	if err != nil {
+		// lru.New only errors when cap <= 0, which cannot happen here.
+		panic(fmt.Sprintf("UserRateLimiter: unexpected lru.New error: %v", err))
+	}
+
+	return &UserRateLimiter{buckets: cache, r: r, burst: burst, limitPerMin: limitPerMin}
+}
+
+func (l *UserRateLimiter) allow(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	lim, ok := l.buckets.Get(key)
+	if !ok {
+		lim = rate.NewLimiter(l.r, l.burst)
+		l.buckets.Add(key, lim)
+	}
+
+	return lim.Allow()
+}
+
+// Handler returns the Gin middleware function for per-user rate limiting.
+// It MUST be mounted AFTER VerifyGatewaySignature + RequireValidIdentity so
+// that identity.UserID is already verified and in context.
+//
+// Requests with no verified identity (uuid.Nil) are allowed through with a
+// Warn log — this mirrors the downstream fallback posture: the identity
+// middleware has already rejected truly unauthenticated requests with 401;
+// reaching here with uuid.Nil is a misconfiguration, not a normal path.
+func (l *UserRateLimiter) Handler() gin.HandlerFunc {
+	retryAfter := strconv.Itoa(int(60.0 / float64(l.limitPerMin)))
+
+	return func(c *gin.Context) {
+		identity, ok := IdentityFromCtx(c)
+		if !ok || identity.UserID == uuid.Nil {
+			slog.Warn("user rate limiter: no verified user_id; passing through", "path", c.Request.URL.Path)
+			c.Next()
+
+			return
+		}
+
+		if !l.allow("notification:rl:user:" + identity.UserID.String()) {
+			c.Header("Retry-After", retryAfter)
+			c.Abort()
+			httpx.ErrCode(c, http.StatusTooManyRequests, "RATE_LIMITED", "too many requests, please try again later")
+
+			return
+		}
+
+		c.Next()
+	}
 }
