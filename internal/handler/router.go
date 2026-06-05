@@ -19,6 +19,12 @@ type RouterConfig struct {
 	Pool  *pgxpool.Pool
 	Redis *redis.Client // may be nil in dev
 
+	// GatewayHMACSecret is the §24.1 shared secret used to verify the
+	// gateway-origin identity signature on the /v1/me/notifications group.
+	// Empty == dev posture (verification disabled); config validation guarantees
+	// it is non-empty in non-dev.
+	GatewayHMACSecret string
+
 	// Comms wiring — only set when NOTIFICATION_COMMS_ENABLED is true. When
 	// CommsService is nil, NO comms routes and NO S2S middleware are registered
 	// (the module is dormant and the service behaves exactly as before).
@@ -33,7 +39,7 @@ type RouterConfig struct {
 // CORS handling. Adding permissive CORS here would widen the attack surface without
 // benefit (CONVENTIONS §9 positions CORS after the access-log in the chain but
 // the gateway/edge handles it before requests reach this service).
-func NewRouter(cfg RouterConfig) *gin.Engine {
+func NewRouter(cfg *RouterConfig) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 
 	r := gin.New()
@@ -59,6 +65,12 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	notifH := NewNotificationHandler(cfg.Store)
 
 	api := r.Group("/v1/me/notifications")
+	// Defense-in-depth (§24.1): verify the gateway-origin HMAC signature BEFORE
+	// any identity-header middleware trusts the request. When the secret is empty
+	// (dev) this is a no-op passthrough, matching the gateway's dev signing-skip.
+	// NOTE: do NOT add VerifyGatewaySignature to /v1/comms/* — that group is
+	// S2S-only (X-Service-Token) and is intentionally NOT proxied from the gateway.
+	api.Use(middleware.VerifyGatewaySignature(cfg.GatewayHMACSecret))
 	api.Use(middleware.RequireValidIdentity())
 	api.Use(middleware.RequireTier(0)) // CONVENTIONS §10: explicit min-tier declaration per protected route
 

@@ -155,10 +155,12 @@ func TestConfig_validateComms(t *testing.T) {
 		errContains string
 	}{
 		{
-			name: "comms disabled: no comms validation runs (dormant)",
+			name: "comms disabled: no comms validation runs (dormant) — non-dev still needs HMAC secrets",
 			envs: merge(baseEnv(), map[string]string{
-				"NOTIFICATION_ENV":           "production",
-				"NOTIFICATION_COMMS_ENABLED": "false",
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_COMMS_ENABLED":       "false",
+				"EVENT_HMAC_SECRET":                validHMAC,
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
 			}),
 			wantErr: false,
 		},
@@ -187,13 +189,14 @@ func TestConfig_validateComms(t *testing.T) {
 		{
 			name: "non-dev rejects stub email provider",
 			envs: merge(baseEnv(), map[string]string{
-				"NOTIFICATION_ENV":            "production",
-				"NOTIFICATION_COMMS_ENABLED":  "true",
-				"NOTIFICATION_S2S_TOKEN":      validToken,
-				"EVENT_HMAC_SECRET":           validHMAC,
-				"NOTIFICATION_EMAIL_PROVIDER": "stub",
-				"NOTIFICATION_SMS_PROVIDER":   "aws-sns",
-				"NOTIFICATION_SMS_REGION":     "ap-southeast-1",
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_COMMS_ENABLED":       "true",
+				"NOTIFICATION_S2S_TOKEN":           validToken,
+				"EVENT_HMAC_SECRET":                validHMAC,
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
+				"NOTIFICATION_EMAIL_PROVIDER":      "stub",
+				"NOTIFICATION_SMS_PROVIDER":        "aws-sns",
+				"NOTIFICATION_SMS_REGION":          "ap-southeast-1",
 			}),
 			wantErr:     true,
 			errContains: "EMAIL_PROVIDER 'stub' is not allowed outside development",
@@ -201,13 +204,14 @@ func TestConfig_validateComms(t *testing.T) {
 		{
 			name: "non-dev smtp provider without host/from fails fast",
 			envs: merge(baseEnv(), map[string]string{
-				"NOTIFICATION_ENV":            "production",
-				"NOTIFICATION_COMMS_ENABLED":  "true",
-				"NOTIFICATION_S2S_TOKEN":      validToken,
-				"EVENT_HMAC_SECRET":           validHMAC,
-				"NOTIFICATION_EMAIL_PROVIDER": "smtp",
-				"NOTIFICATION_SMS_PROVIDER":   "aws-sns",
-				"NOTIFICATION_SMS_REGION":     "ap-southeast-1",
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_COMMS_ENABLED":       "true",
+				"NOTIFICATION_S2S_TOKEN":           validToken,
+				"EVENT_HMAC_SECRET":                validHMAC,
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
+				"NOTIFICATION_EMAIL_PROVIDER":      "smtp",
+				"NOTIFICATION_SMS_PROVIDER":        "aws-sns",
+				"NOTIFICATION_SMS_REGION":          "ap-southeast-1",
 			}),
 			wantErr:     true,
 			errContains: "NOTIFICATION_EMAIL_SMTP_HOST is required",
@@ -215,15 +219,16 @@ func TestConfig_validateComms(t *testing.T) {
 		{
 			name: "non-dev huawei provider without creds fails fast",
 			envs: merge(baseEnv(), map[string]string{
-				"NOTIFICATION_ENV":             "production",
-				"NOTIFICATION_COMMS_ENABLED":   "true",
-				"NOTIFICATION_S2S_TOKEN":       validToken,
-				"EVENT_HMAC_SECRET":            validHMAC,
-				"NOTIFICATION_EMAIL_PROVIDER":  "smtp",
-				"NOTIFICATION_EMAIL_SMTP_HOST": "smtp.example.com",
-				"NOTIFICATION_EMAIL_SMTP_FROM": "no-reply@example.com",
-				"NOTIFICATION_SMS_PROVIDER":    "huawei",
-				"NOTIFICATION_SMS_REGION":      "smsapi.example.com:443",
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_COMMS_ENABLED":       "true",
+				"NOTIFICATION_S2S_TOKEN":           validToken,
+				"EVENT_HMAC_SECRET":                validHMAC,
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
+				"NOTIFICATION_EMAIL_PROVIDER":      "smtp",
+				"NOTIFICATION_EMAIL_SMTP_HOST":     "smtp.example.com",
+				"NOTIFICATION_EMAIL_SMTP_FROM":     "no-reply@example.com",
+				"NOTIFICATION_SMS_PROVIDER":        "huawei",
+				"NOTIFICATION_SMS_REGION":          "smsapi.example.com:443",
 			}),
 			wantErr:     true,
 			errContains: "NOTIFICATION_SMS_API_KEY and NOTIFICATION_SMS_API_SECRET are required",
@@ -231,15 +236,16 @@ func TestConfig_validateComms(t *testing.T) {
 		{
 			name: "non-dev short S2S token fails",
 			envs: merge(baseEnv(), map[string]string{
-				"NOTIFICATION_ENV":             "production",
-				"NOTIFICATION_COMMS_ENABLED":   "true",
-				"NOTIFICATION_S2S_TOKEN":       "short",
-				"EVENT_HMAC_SECRET":            validHMAC,
-				"NOTIFICATION_EMAIL_PROVIDER":  "smtp",
-				"NOTIFICATION_EMAIL_SMTP_HOST": "smtp.example.com",
-				"NOTIFICATION_EMAIL_SMTP_FROM": "no-reply@example.com",
-				"NOTIFICATION_SMS_PROVIDER":    "aws-sns",
-				"NOTIFICATION_SMS_REGION":      "ap-southeast-1",
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_COMMS_ENABLED":       "true",
+				"NOTIFICATION_S2S_TOKEN":           "short",
+				"EVENT_HMAC_SECRET":                validHMAC,
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
+				"NOTIFICATION_EMAIL_PROVIDER":      "smtp",
+				"NOTIFICATION_EMAIL_SMTP_HOST":     "smtp.example.com",
+				"NOTIFICATION_EMAIL_SMTP_FROM":     "no-reply@example.com",
+				"NOTIFICATION_SMS_PROVIDER":        "aws-sns",
+				"NOTIFICATION_SMS_REGION":          "ap-southeast-1",
 			}),
 			wantErr:     true,
 			errContains: "NOTIFICATION_S2S_TOKEN must be at least",
@@ -247,15 +253,161 @@ func TestConfig_validateComms(t *testing.T) {
 		{
 			name: "non-dev fully-configured smtp + aws-sns is valid",
 			envs: merge(baseEnv(), map[string]string{
-				"NOTIFICATION_ENV":             "production",
-				"NOTIFICATION_COMMS_ENABLED":   "true",
-				"NOTIFICATION_S2S_TOKEN":       validToken,
-				"EVENT_HMAC_SECRET":            validHMAC,
-				"NOTIFICATION_EMAIL_PROVIDER":  "smtp",
-				"NOTIFICATION_EMAIL_SMTP_HOST": "smtp.example.com",
-				"NOTIFICATION_EMAIL_SMTP_FROM": "no-reply@example.com",
-				"NOTIFICATION_SMS_PROVIDER":    "aws-sns",
-				"NOTIFICATION_SMS_REGION":      "ap-southeast-1",
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_COMMS_ENABLED":       "true",
+				"NOTIFICATION_S2S_TOKEN":           validToken,
+				"EVENT_HMAC_SECRET":                validHMAC,
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
+				"NOTIFICATION_EMAIL_PROVIDER":      "smtp",
+				"NOTIFICATION_EMAIL_SMTP_HOST":     "smtp.example.com",
+				"NOTIFICATION_EMAIL_SMTP_FROM":     "no-reply@example.com",
+				"NOTIFICATION_SMS_PROVIDER":        "aws-sns",
+				"NOTIFICATION_SMS_REGION":          "ap-southeast-1",
+			}),
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envs {
+				t.Setenv(k, v)
+			}
+
+			cfg, err := config.Load()
+
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.errContains != "" {
+					assert.Contains(t, err.Error(), tc.errContains)
+				}
+				assert.Nil(t, cfg)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+		})
+	}
+}
+
+// TestConfig_validateEventHMAC verifies that EVENT_HMAC_SECRET is required in
+// non-dev regardless of whether the comms module is enabled.
+func TestConfig_validateEventHMAC(t *testing.T) {
+	const validGatewayHMAC = "valid-gateway-hmac-32bytes-012345"
+	const validHMACVal = "valid-event-hmac-32bytes-0123456"
+
+	tests := []struct {
+		name        string
+		envs        map[string]string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "non-dev: missing EVENT_HMAC_SECRET fails",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validGatewayHMAC,
+			}),
+			wantErr:     true,
+			errContains: "EVENT_HMAC_SECRET is required in non-development",
+		},
+		{
+			name: "non-dev: short EVENT_HMAC_SECRET fails",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validGatewayHMAC,
+				"EVENT_HMAC_SECRET":                "short",
+			}),
+			wantErr:     true,
+			errContains: "EVENT_HMAC_SECRET must be at least",
+		},
+		{
+			name: "non-dev: valid EVENT_HMAC_SECRET passes",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validGatewayHMAC,
+				"EVENT_HMAC_SECRET":                validHMACVal,
+			}),
+			wantErr: false,
+		},
+		{
+			name: "dev: missing EVENT_HMAC_SECRET is allowed",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV": "development",
+			}),
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envs {
+				t.Setenv(k, v)
+			}
+
+			cfg, err := config.Load()
+
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.errContains != "" {
+					assert.Contains(t, err.Error(), tc.errContains)
+				}
+				assert.Nil(t, cfg)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+		})
+	}
+}
+
+// TestConfig_validateGatewayHMAC verifies that NOTIFICATION_GATEWAY_HMAC_SECRET
+// is required in non-dev environments (§24.1 trust-C).
+func TestConfig_validateGatewayHMAC(t *testing.T) {
+	const validEventHMAC = "valid-event-hmac-32bytes-01234567"
+
+	tests := []struct {
+		name        string
+		envs        map[string]string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "non-dev: missing NOTIFICATION_GATEWAY_HMAC_SECRET fails",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV":  "production",
+				"EVENT_HMAC_SECRET": validEventHMAC,
+			}),
+			wantErr:     true,
+			errContains: "NOTIFICATION_GATEWAY_HMAC_SECRET is required in non-development",
+		},
+		{
+			name: "non-dev: short NOTIFICATION_GATEWAY_HMAC_SECRET fails",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV":                 "production",
+				"EVENT_HMAC_SECRET":                validEventHMAC,
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": "tooshort",
+			}),
+			wantErr:     true,
+			errContains: "NOTIFICATION_GATEWAY_HMAC_SECRET must be at least",
+		},
+		{
+			name: "non-dev: valid NOTIFICATION_GATEWAY_HMAC_SECRET passes",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV":                 "production",
+				"EVENT_HMAC_SECRET":                validEventHMAC,
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": "valid-gateway-hmac-secret-32bytes",
+			}),
+			wantErr: false,
+		},
+		{
+			name: "dev: missing NOTIFICATION_GATEWAY_HMAC_SECRET is allowed",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV": "development",
 			}),
 			wantErr: false,
 		},

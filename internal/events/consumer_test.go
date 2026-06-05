@@ -51,7 +51,7 @@ func (s *countingStore) MarkAllRead(_ context.Context, _ uuid.UUID) error {
 // on a subscribed channel is silently skipped (no insert, no panic).
 func TestConsumer_OversizedPayload(t *testing.T) {
 	cs := &countingStore{}
-	c := events.NewConsumer(nil, cs)
+	c := events.NewConsumer(nil, cs, nil)
 
 	// Build a payload larger than 64 KiB.
 	oversized := strings.Repeat("x", 64*1024+1)
@@ -73,7 +73,7 @@ func TestConsumer_OversizedPayload(t *testing.T) {
 // on a subscribed channel results in exactly one insert.
 func TestConsumer_ValidSmallPayload(t *testing.T) {
 	cs := &countingStore{}
-	c := events.NewConsumer(nil, cs)
+	c := events.NewConsumer(nil, cs, nil)
 
 	userID := uuid.New()
 	eventID := uuid.New()
@@ -97,7 +97,7 @@ func TestConsumer_ValidSmallPayload(t *testing.T) {
 // silently skipped — no insert, no panic.
 func TestConsumer_MalformedJSON(t *testing.T) {
 	cs := &countingStore{}
-	c := events.NewConsumer(nil, cs)
+	c := events.NewConsumer(nil, cs, nil)
 
 	msg := &redis.Message{
 		Channel: "kyc.tier_changed",

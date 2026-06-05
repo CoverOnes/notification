@@ -48,8 +48,16 @@ type Config struct {
 	Env string `mapstructure:"env"`
 
 	// EventHMACSecret is the shared secret used to verify inbound signed events
-	// (comms.send_requested). Required in non-development when comms is enabled.
+	// (comms.send_requested and kyc.status_changed). Required in all non-development
+	// environments — the consumer needs it for HMAC verification regardless of
+	// whether the comms module is enabled.
 	EventHMACSecret string `mapstructure:"event_hmac_secret"`
+
+	// GatewayHMACSecret is the §24.1 shared secret used to verify the
+	// gateway-origin identity signature on user-facing (proxied) routes.
+	// Required in non-development (≥ 32 chars). Empty == dev posture (skip verify).
+	// Env: NOTIFICATION_GATEWAY_HMAC_SECRET
+	GatewayHMACSecret string `mapstructure:"gateway_hmac_secret"`
 
 	// Comms holds the dormant-by-default outbound-messaging (comms) module config.
 	Comms CommsConfig `mapstructure:",squash"`
@@ -96,15 +104,16 @@ func Load() (*Config, error) {
 
 	//nolint:gosec // G101 false positive: these are env-var NAMES (e.g. NOTIFICATION_S2S_TOKEN, EVENT_HMAC_SECRET), not credential values
 	bindings := map[string]string{
-		"port":              "NOTIFICATION_PORT",
-		"postgres_dsn":      "NOTIFICATION_POSTGRES_DSN",
-		"postgres_schema":   "NOTIFICATION_DB_SCHEMA",
-		"db_max_conns":      "NOTIFICATION_DB_MAX_CONNS",
-		"db_min_conns":      "NOTIFICATION_DB_MIN_CONNS",
-		"redis_url":         "NOTIFICATION_REDIS_URL",
-		"log_level":         "NOTIFICATION_LOG_LEVEL",
-		"env":               "NOTIFICATION_ENV",
-		"event_hmac_secret": "EVENT_HMAC_SECRET",
+		"port":                "NOTIFICATION_PORT",
+		"postgres_dsn":        "NOTIFICATION_POSTGRES_DSN",
+		"postgres_schema":     "NOTIFICATION_DB_SCHEMA",
+		"db_max_conns":        "NOTIFICATION_DB_MAX_CONNS",
+		"db_min_conns":        "NOTIFICATION_DB_MIN_CONNS",
+		"redis_url":           "NOTIFICATION_REDIS_URL",
+		"log_level":           "NOTIFICATION_LOG_LEVEL",
+		"env":                 "NOTIFICATION_ENV",
+		"event_hmac_secret":   "EVENT_HMAC_SECRET",
+		"gateway_hmac_secret": "NOTIFICATION_GATEWAY_HMAC_SECRET",
 
 		// Comms module (dormant by default).
 		"comms_enabled":      "NOTIFICATION_COMMS_ENABLED",
@@ -192,6 +201,8 @@ func (c *Config) validate() error {
 		errs = append(errs, "NOTIFICATION_DB_MIN_CONNS must be <= NOTIFICATION_DB_MAX_CONNS")
 	}
 
+	errs = append(errs, c.validateEventHMAC()...)
+	errs = append(errs, c.validateGatewayHMAC()...)
 	errs = append(errs, c.validateComms()...)
 
 	if len(errs) > 0 {
@@ -201,9 +212,50 @@ func (c *Config) validate() error {
 	return nil
 }
 
+// minHMACSecretLen is the minimum length for HMAC secrets.
+// Below this, brute-force against the shared secret becomes practical.
+const minHMACSecretLen = 32
+
 // minS2STokenLen is the minimum NOTIFICATION_S2S_TOKEN length. Below this a
 // brute-force against the shared send-API token becomes practical.
 const minS2STokenLen = 24
+
+// validateEventHMAC enforces that EVENT_HMAC_SECRET is present and long enough
+// in non-development environments. The consumer needs it for kyc.status_changed
+// HMAC verification regardless of whether the comms module is enabled.
+func (c *Config) validateEventHMAC() []string {
+	if c.IsDev() {
+		return nil
+	}
+
+	var errs []string
+
+	if c.EventHMACSecret == "" {
+		errs = append(errs, "EVENT_HMAC_SECRET is required in non-development")
+	} else if len(c.EventHMACSecret) < minHMACSecretLen {
+		errs = append(errs, fmt.Sprintf("EVENT_HMAC_SECRET must be at least %d characters", minHMACSecretLen))
+	}
+
+	return errs
+}
+
+// validateGatewayHMAC enforces that NOTIFICATION_GATEWAY_HMAC_SECRET is present
+// and long enough in non-development environments (§24.1).
+func (c *Config) validateGatewayHMAC() []string {
+	if c.IsDev() {
+		return nil
+	}
+
+	var errs []string
+
+	if c.GatewayHMACSecret == "" {
+		errs = append(errs, "NOTIFICATION_GATEWAY_HMAC_SECRET is required in non-development")
+	} else if len(c.GatewayHMACSecret) < minHMACSecretLen {
+		errs = append(errs, fmt.Sprintf("NOTIFICATION_GATEWAY_HMAC_SECRET must be at least %d characters", minHMACSecretLen))
+	}
+
+	return errs
+}
 
 // validEmailProviders / validSMSProviders are the accepted provider names.
 var (
@@ -242,11 +294,8 @@ func (c *Config) validateComms() []string {
 		errs = append(errs, fmt.Sprintf("NOTIFICATION_S2S_TOKEN must be at least %d characters", minS2STokenLen))
 	}
 
-	// Event HMAC secret: required in non-dev when comms is enabled (the event path
-	// verifies signatures; an empty secret would make forgery trivial).
-	if !dev && c.EventHMACSecret == "" {
-		errs = append(errs, "EVENT_HMAC_SECRET is required when comms is enabled in non-development")
-	}
+	// EVENT_HMAC_SECRET is now validated unconditionally for all non-dev environments
+	// by validateEventHMAC() — no duplicate check here.
 
 	if !dev {
 		errs = append(errs, c.validateCommsNonDev(emailProv, smsProv)...)
