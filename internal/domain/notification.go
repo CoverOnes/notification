@@ -24,6 +24,9 @@ const (
 	NotificationTypeContractSigned NotificationType = "CONTRACT_SIGNED"
 	// NotificationTypeAccountSuspended fires when an account is suspended.
 	NotificationTypeAccountSuspended NotificationType = "ACCOUNT_SUSPENDED"
+	// NotificationTypeKYCStatusChanged fires when a user's KYC review concludes
+	// (APPROVED or REJECTED). Introduced by trust-C.
+	NotificationTypeKYCStatusChanged NotificationType = "KYC_STATUS_CHANGED"
 )
 
 // Sentinel errors for domain operations.

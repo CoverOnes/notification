@@ -157,22 +157,25 @@ func run() error {
 	consumerCtx, consumerCancel := context.WithCancel(context.Background())
 	defer consumerCancel()
 
+	kycHMACSecret := []byte(cfg.EventHMACSecret)
+
 	var consumer *events.Consumer
 	if commsEventHandler != nil {
-		consumer = events.NewConsumerWithComms(redisClient, notifStore, commsEventHandler)
+		consumer = events.NewConsumerWithComms(redisClient, notifStore, commsEventHandler, kycHMACSecret)
 	} else {
-		consumer = events.NewConsumer(redisClient, notifStore)
+		consumer = events.NewConsumer(redisClient, notifStore, kycHMACSecret)
 	}
 
 	go consumer.Run(consumerCtx)
 
 	// Router.
-	r := handler.NewRouter(handler.RouterConfig{
-		Store:        notifStore,
-		Pool:         pool,
-		Redis:        redisClient,
-		CommsService: commsSvc,
-		S2SToken:     cfg.Comms.S2SToken,
+	r := handler.NewRouter(&handler.RouterConfig{
+		Store:             notifStore,
+		Pool:              pool,
+		Redis:             redisClient,
+		GatewayHMACSecret: cfg.GatewayHMACSecret,
+		CommsService:      commsSvc,
+		S2SToken:          cfg.Comms.S2SToken,
 	})
 
 	srv := &http.Server{

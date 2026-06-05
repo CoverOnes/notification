@@ -2,7 +2,12 @@
 package domain
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -54,4 +59,71 @@ type MilestoneReachedData struct {
 type ContractSignedData struct {
 	UserID     uuid.UUID `json:"userId"`
 	ContractID uuid.UUID `json:"contractId"`
+}
+
+// SignedEventEnvelope extends EventEnvelope with an HMAC signature field.
+// Used for events that carry a publisher-side HMAC-SHA256 signature to allow
+// the consumer to verify authenticity before processing (trust-C §2).
+type SignedEventEnvelope struct {
+	EventEnvelope
+	Signature string `json:"signature"`
+}
+
+// KYCStatusChangedData is the data payload for kyc.status_changed events.
+// This event is published by the kyc service when a user's KYC review concludes.
+// Note: no email address is included (PII §15); outbound dispatch requires a
+// separate S2S user-email lookup (tracked as a follow-up task).
+type KYCStatusChangedData struct {
+	UserID       uuid.UUID `json:"userId"`
+	OldStatus    string    `json:"oldStatus"`
+	NewStatus    string    `json:"newStatus"`
+	OldTier      int       `json:"oldTier"`
+	NewTier      int       `json:"newTier"`
+	SubmissionID uuid.UUID `json:"submissionId"`
+	RequestID    string    `json:"requestId"`
+}
+
+// VerifyStatusChangedSignature verifies the HMAC-SHA256 signature on a
+// kyc.status_changed event against the shared EVENT_HMAC_SECRET.
+//
+// SHARED EVENT CONTRACT — must match byte-for-byte with the kyc publisher:
+//
+//	canonical = eventId + "|" + occurredAt.UTC().Format(time.RFC3339Nano) + "|" +
+//	            version + "|" + userId + "|" + newStatus + "|" + newTier
+//	want      = lowercase hex of HMAC-SHA256(secret, canonical)
+//
+// kyc publishes occurredAt as time.RFC3339Nano, so parsing and re-formatting
+// with the same layout is byte-identical — this is safe.
+//
+// Returns false (drop the event) if:
+//   - secret is empty — fail-closed: an empty EVENT_HMAC_SECRET means verification
+//     is misconfigured; computing HMAC with an empty key would accept any forged
+//     event, so we reject unconditionally. Non-dev enforces ≥32 chars at boot
+//     (validateEventHMAC); this is defense-in-depth at the function level.
+//     Dev callers must set EVENT_HMAC_SECRET or all events are dropped.
+//   - env.Signature is empty
+//   - HMAC comparison fails
+func VerifyStatusChangedSignature(env *SignedEventEnvelope, data *KYCStatusChangedData, secret []byte) bool {
+	if len(secret) == 0 {
+		return false
+	}
+
+	if env.Signature == "" {
+		return false
+	}
+
+	canonical := strings.Join([]string{
+		env.EventID.String(),
+		env.OccurredAt.UTC().Format(time.RFC3339Nano),
+		strconv.Itoa(env.Version),
+		data.UserID.String(),
+		data.NewStatus,
+		strconv.Itoa(data.NewTier),
+	}, "|")
+
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write([]byte(canonical)) // hash.Hash.Write never returns an error
+	want := hex.EncodeToString(mac.Sum(nil))
+
+	return hmac.Equal([]byte(want), []byte(env.Signature))
 }

@@ -16,6 +16,7 @@ import (
 // inbox. CONVENTIONS §14: dotted lowercase <domain>.<event>.
 var inboxChannels = []string{
 	"kyc.tier_changed",
+	"kyc.status_changed",
 	"user.suspended",
 	"marketplace.bid_received",
 	"marketplace.bid_accepted",
@@ -39,22 +40,25 @@ type CommsEventHandler interface {
 // that channel to the comms module (HMAC-verified there); inbox channels are
 // unaffected. When commsHandler is nil the consumer behaves exactly as before.
 type Consumer struct {
-	rdb          *redis.Client
-	store        store.NotificationStore
-	commsHandler CommsEventHandler
+	rdb           *redis.Client
+	store         store.NotificationStore
+	commsHandler  CommsEventHandler
+	kycHMACSecret []byte // shared secret for kyc.status_changed HMAC verification
 }
 
 // NewConsumer creates a Consumer for the inbox channels only (comms dormant).
+// kycHMACSecret is the shared EVENT_HMAC_SECRET used to verify kyc.status_changed
+// events; an empty slice disables HMAC verification (dev mode only).
 // If rdb is nil the consumer is a no-op (dev mode).
-func NewConsumer(rdb *redis.Client, s store.NotificationStore) *Consumer {
-	return &Consumer{rdb: rdb, store: s}
+func NewConsumer(rdb *redis.Client, s store.NotificationStore, kycHMACSecret []byte) *Consumer {
+	return &Consumer{rdb: rdb, store: s, kycHMACSecret: kycHMACSecret}
 }
 
 // NewConsumerWithComms creates a Consumer that additionally subscribes
 // comms.send_requested and routes it to commsHandler. Used only when the comms
 // module is enabled.
-func NewConsumerWithComms(rdb *redis.Client, s store.NotificationStore, commsHandler CommsEventHandler) *Consumer {
-	return &Consumer{rdb: rdb, store: s, commsHandler: commsHandler}
+func NewConsumerWithComms(rdb *redis.Client, s store.NotificationStore, commsHandler CommsEventHandler, kycHMACSecret []byte) *Consumer {
+	return &Consumer{rdb: rdb, store: s, commsHandler: commsHandler, kycHMACSecret: kycHMACSecret}
 }
 
 // channels returns the full subscribe set for this consumer (inbox + optionally
@@ -136,6 +140,15 @@ func (c *Consumer) handle(ctx context.Context, msg *redis.Message) {
 		return
 	}
 
+	// kyc.status_changed requires HMAC verification before any mapping.
+	// It is handled separately to avoid leaking the signed payload into
+	// the general MapEventToNotification path.
+	if msg.Channel == "kyc.status_changed" {
+		c.handleKYCStatusChanged(ctx, msg)
+
+		return
+	}
+
 	var env domain.EventEnvelope
 
 	if err := json.Unmarshal([]byte(msg.Payload), &env); err != nil {
@@ -187,6 +200,84 @@ func (c *Consumer) handle(ctx context.Context, msg *redis.Message) {
 	slog.Info(
 		"consumer: notification created",
 		"channel", msg.Channel,
+		"event_id", env.EventID,
+		"user_id", n.UserID,
+		"notification_id", n.ID,
+	)
+}
+
+// handleKYCStatusChanged processes a kyc.status_changed event.
+// The event envelope contains an HMAC signature that MUST be verified before
+// any action is taken. On failure the event is dropped (slog.Warn with event_id
+// only — NOT the payload — to avoid logging PII or adversarial content).
+//
+// EMAIL/SMS OUTBOUND DISPATCH IS OUT OF SCOPE (product decision):
+// the event carries NO email address (PII per §15).
+// TODO(trust-C): outbound email needs an S2S user-email lookup — tracked as a separate task.
+func (c *Consumer) handleKYCStatusChanged(ctx context.Context, msg *redis.Message) {
+	// Step 1: unmarshal into SignedEventEnvelope.
+	var env domain.SignedEventEnvelope
+
+	if err := json.Unmarshal([]byte(msg.Payload), &env); err != nil {
+		slog.Warn(
+			"consumer: kyc.status_changed: malformed envelope; dropping",
+			"channel", msg.Channel,
+			"err", err,
+		)
+
+		return
+	}
+
+	// Step 2: unmarshal the data field.
+	var data domain.KYCStatusChangedData
+
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		slog.Warn(
+			"consumer: kyc.status_changed: malformed data; dropping",
+			"event_id", env.EventID,
+			"err", err,
+		)
+
+		return
+	}
+
+	// Step 3: HMAC verification. On failure: log event_id only (never payload),
+	// then drop the event.
+	if !domain.VerifyStatusChangedSignature(&env, &data, c.kycHMACSecret) {
+		slog.Warn(
+			"consumer: kyc.status_changed: HMAC verification failed; dropping event",
+			"event_id", env.EventID,
+		)
+
+		return
+	}
+
+	// Step 4: map to inbox notification via mapper.
+	n, err := domain.MapKYCStatusChanged(env.EventEnvelope, &data)
+	if err != nil {
+		slog.Warn(
+			"consumer: kyc.status_changed: mapping failed; dropping",
+			"event_id", env.EventID,
+			"err", err,
+		)
+
+		return
+	}
+
+	// Step 5: persist. Duplicate events are idempotent via ON CONFLICT DO NOTHING
+	// (the unique index on (user_id, source_event_id) in the store).
+	if insertErr := c.store.Insert(ctx, n); insertErr != nil {
+		slog.Warn(
+			"consumer: kyc.status_changed: failed to insert notification; skipping",
+			"event_id", env.EventID,
+			"err", insertErr,
+		)
+
+		return
+	}
+
+	slog.Info(
+		"consumer: kyc.status_changed notification created",
 		"event_id", env.EventID,
 		"user_id", n.UserID,
 		"notification_id", n.ID,

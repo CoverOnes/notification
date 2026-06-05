@@ -12,6 +12,10 @@ import (
 // MapEventToNotification maps a parsed EventEnvelope from a Redis channel to a
 // Notification struct ready for insertion. Returns an error if the payload is
 // unrecognized or malformed.
+//
+// Note: kyc.status_changed is NOT routed through this function — the consumer
+// handles it separately via handleKYCStatusChanged (HMAC-verified before mapping)
+// and calls MapKYCStatusChanged directly with pre-parsed typed data.
 func MapEventToNotification(channel string, env EventEnvelope) (*Notification, error) {
 	switch channel {
 	case "kyc.tier_changed":
@@ -29,6 +33,46 @@ func MapEventToNotification(channel string, env EventEnvelope) (*Notification, e
 	default:
 		return nil, fmt.Errorf("unknown channel: %s", channel)
 	}
+}
+
+// MapKYCStatusChanged maps a verified kyc.status_changed event to an inbox
+// Notification. Called by the consumer AFTER HMAC verification succeeds.
+//
+// Title / body per product spec:
+//   - NewStatus == "APPROVED" → "KYC Approved" + tier info
+//   - NewStatus == "REJECTED" → "KYC Not Approved" + resubmit prompt
+//   - else                   → generic status-changed message
+func MapKYCStatusChanged(env EventEnvelope, data *KYCStatusChangedData) (*Notification, error) {
+	if data.UserID == uuid.Nil {
+		return nil, fmt.Errorf("kyc.status_changed: missing userId")
+	}
+
+	eid := env.EventID
+
+	var title, body string
+
+	switch data.NewStatus {
+	case "APPROVED":
+		title = "KYC Approved"
+		body = fmt.Sprintf("Your identity has been verified. You are now KYC tier %d.", data.NewTier)
+	case "REJECTED":
+		title = "KYC Not Approved"
+		body = "Your KYC submission was not approved. Please review the requirements and resubmit."
+	default:
+		title = "KYC Status Updated"
+		body = fmt.Sprintf("Your KYC status has changed to %s.", data.NewStatus)
+	}
+
+	return &Notification{
+		ID:            uuid.New(),
+		UserID:        data.UserID,
+		Type:          NotificationTypeKYCStatusChanged,
+		Title:         title,
+		Body:          body,
+		Data:          nil, // PII §15: do NOT store raw event data (no email, no submission details)
+		SourceEventID: &eid,
+		CreatedAt:     time.Now().UTC(),
+	}, nil
 }
 
 func mapKYCTierChanged(env EventEnvelope) (*Notification, error) {
