@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/CoverOnes/notification/internal/platform/middleware"
@@ -60,21 +61,41 @@ func TestUserRateLimiter_AllowWithinBudget(t *testing.T) {
 }
 
 // TestUserRateLimiter_DenyOverBudget verifies that requests exceeding the burst
-// allowance are rejected with 429 and a Retry-After header.
+// allowance are rejected with 429 and a Retry-After header that is >= "1".
 func TestUserRateLimiter_DenyOverBudget(t *testing.T) {
-	uid := uuid.New().String()
-	r := buildUserRLEngine(60, 2) // burst=2 — 3rd request must be rejected
-
-	// First two succeed.
-	for i := range 2 {
-		w := doReq(t, r, uid)
-		require.Equal(t, http.StatusOK, w.Code, "request %d should pass", i+1)
+	tests := []struct {
+		name   string
+		perMin int
+		burst  int
+	}{
+		{"perMin=60 burst=2", 60, 2},
+		{"perMin=120 burst=2", 120, 2}, // default perMin; must never produce Retry-After "0"
 	}
 
-	// Third request must be rate-limited.
-	w := doReq(t, r, uid)
-	assert.Equal(t, http.StatusTooManyRequests, w.Code)
-	assert.NotEmpty(t, w.Header().Get("Retry-After"), "Retry-After header must be set on 429")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			uid := uuid.New().String()
+			r := buildUserRLEngine(tc.perMin, tc.burst)
+
+			// Exhaust burst.
+			for i := range tc.burst {
+				w := doReq(t, r, uid)
+				require.Equal(t, http.StatusOK, w.Code, "request %d should pass", i+1)
+			}
+
+			// Next request must be rate-limited.
+			w := doReq(t, r, uid)
+			assert.Equal(t, http.StatusTooManyRequests, w.Code)
+
+			ra := w.Header().Get("Retry-After")
+			assert.NotEmpty(t, ra, "Retry-After header must be set on 429")
+
+			// Retry-After must be a positive integer string (never "0").
+			raVal, err := strconv.Atoi(ra)
+			require.NoError(t, err, "Retry-After must be a numeric string, got %q", ra)
+			assert.GreaterOrEqual(t, raVal, 1, "Retry-After must be >= 1 to prevent immediate-retry loops (perMin=%d)", tc.perMin)
+		})
+	}
 }
 
 // TestUserRateLimiter_IndependentBuckets verifies that two different user IDs

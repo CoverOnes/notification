@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"sync"
@@ -222,7 +223,7 @@ func (l *UserRateLimiter) allow(key string) bool {
 // middleware has already rejected truly unauthenticated requests with 401;
 // reaching here with uuid.Nil is a misconfiguration, not a normal path.
 func (l *UserRateLimiter) Handler() gin.HandlerFunc {
-	retryAfter := strconv.Itoa(int(60.0 / float64(l.limitPerMin)))
+	retryAfter := strconv.Itoa(max(1, int(math.Ceil(60.0/float64(l.limitPerMin)))))
 
 	return func(c *gin.Context) {
 		identity, ok := IdentityFromCtx(c)

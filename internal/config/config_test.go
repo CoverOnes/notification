@@ -437,6 +437,74 @@ func TestConfig_validateGatewayHMAC(t *testing.T) {
 	}
 }
 
+// TestConfig_validateUserRateLimit verifies the per-user rate-limit validation:
+// perMin < 0 is rejected, a positive perMin paired with burst <= 0 is rejected,
+// perMin = 0 (disabled) passes without any burst constraint, and a valid pair passes.
+func TestConfig_validateUserRateLimit(t *testing.T) {
+	tests := []struct {
+		name        string
+		perMin      string
+		burst       string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:        "perMin<0 is rejected",
+			perMin:      "-1",
+			burst:       "5",
+			wantErr:     true,
+			errContains: "NOTIFICATION_USER_RATE_LIMIT_PER_MIN must be >= 0",
+		},
+		{
+			name:        "perMin>0 with burst<=0 is rejected",
+			perMin:      "60",
+			burst:       "0",
+			wantErr:     true,
+			errContains: "NOTIFICATION_USER_RATE_LIMIT_BURST must be > 0",
+		},
+		{
+			name:    "perMin=0 (disabled) passes regardless of burst",
+			perMin:  "0",
+			burst:   "0",
+			wantErr: false,
+		},
+		{
+			name:    "valid perMin and burst passes",
+			perMin:  "120",
+			burst:   "20",
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV":                     "development",
+				"NOTIFICATION_USER_RATE_LIMIT_PER_MIN": tc.perMin,
+				"NOTIFICATION_USER_RATE_LIMIT_BURST":   tc.burst,
+			})
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+
+			cfg, err := config.Load()
+
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.errContains != "" {
+					assert.Contains(t, err.Error(), tc.errContains)
+				}
+				assert.Nil(t, cfg)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+		})
+	}
+}
+
 // merge returns a new map combining base + extra (extra wins).
 func merge(base, extra map[string]string) map[string]string {
 	out := make(map[string]string, len(base)+len(extra))
