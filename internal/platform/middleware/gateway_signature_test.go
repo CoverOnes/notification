@@ -147,6 +147,19 @@ func TestVerifyGatewaySignature(t *testing.T) {
 			sig:           "",
 			wantStatus:    http.StatusOK,
 		},
+		{
+			name:          "future timestamp beyond skew (120s) → 401",
+			secret:        testGatewaySecret,
+			userID:        validUserID,
+			kycTier:       "0",
+			accountType:   "individual",
+			emailVerified: "true",
+			requestID:     validRequestID,
+			ts:            fmt.Sprintf("%d", time.Now().Unix()+120), // 2 min in the future — beyond 30s skew
+			sig: computeTestSig(testGatewaySecret, validUserID, "0", "individual", "true", validRequestID,
+				fmt.Sprintf("%d", time.Now().Unix()+120)),
+			wantStatus: http.StatusUnauthorized,
+		},
 	}
 
 	for _, tc := range tests {

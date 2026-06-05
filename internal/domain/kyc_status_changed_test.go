@@ -15,6 +15,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// goldenStatusChangedHex is the shared cross-repo HMAC-SHA256 golden vector.
+// It must equal the kyc repo's goldenStatusChangedHex constant — any divergence
+// means the publisher (kyc) and consumer (notification) have a contract mismatch.
+//
+// Fixed inputs (identical to kyc repo's TestSignStatusChanged_GoldenVector):
+//
+//	eventId   = "11111111-1111-1111-1111-111111111111"
+//	occurredAt = time.RFC3339Nano parse of "2026-06-05T00:00:00Z" → "2026-06-05T00:00:00Z"
+//	version   = 1
+//	userId    = "22222222-2222-2222-2222-222222222222"
+//	newStatus = "APPROVED"
+//	newTier   = 2
+//	secret    = "golden-test-secret-min-32-bytes-aaaaaaaa"
+//
+// canonical: "11111111-1111-1111-1111-111111111111|2026-06-05T00:00:00Z|1|22222222-2222-2222-2222-222222222222|APPROVED|2"
+const goldenStatusChangedHex = "cd413437e380bdc7fe0d59e08e27a94b35ff417f6d7c9ca269df4d7bd86f0dd3"
+
 const testEventHMACVal = "test-event-hmac-32bytes-01234567!"
 
 // buildStatusChangedSig computes the canonical HMAC-SHA256 signature for a
@@ -56,6 +73,38 @@ func makeStatusChangedEnvelope(userID uuid.UUID, newStatus string, newTier int) 
 	env.Signature = buildStatusChangedSig([]byte(testEventHMACVal), &env, &data)
 
 	return env, data
+}
+
+// TestVerifyStatusChangedSignature_GoldenVector asserts that notification's
+// VerifyStatusChangedSignature ACCEPTS the golden signature produced by kyc's
+// SignStatusChanged for the same fixed inputs. The goldenStatusChangedHex constant
+// is identical in both repos, proving byte-for-byte contract compatibility.
+func TestVerifyStatusChangedSignature_GoldenVector(t *testing.T) {
+	t.Parallel()
+
+	goldenOccurredAt, err := time.Parse(time.RFC3339Nano, "2026-06-05T00:00:00Z")
+	require.NoError(t, err)
+
+	env := domain.SignedEventEnvelope{
+		EventEnvelope: domain.EventEnvelope{
+			EventID:    uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+			OccurredAt: goldenOccurredAt.UTC(),
+			Version:    1,
+		},
+		Signature: goldenStatusChangedHex,
+	}
+
+	data := &domain.KYCStatusChangedData{
+		UserID:    uuid.MustParse("22222222-2222-2222-2222-222222222222"),
+		NewStatus: "APPROVED",
+		NewTier:   2,
+	}
+
+	secret := []byte("golden-test-secret-min-32-bytes-aaaaaaaa")
+
+	ok := domain.VerifyStatusChangedSignature(&env, data, secret)
+	assert.True(t, ok,
+		"VerifyStatusChangedSignature must accept kyc's golden HMAC vector — contract mismatch if false")
 }
 
 func TestVerifyStatusChangedSignature(t *testing.T) {

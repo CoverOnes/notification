@@ -96,10 +96,18 @@ type KYCStatusChangedData struct {
 // with the same layout is byte-identical — this is safe.
 //
 // Returns false (drop the event) if:
+//   - secret is empty — fail-closed: an empty EVENT_HMAC_SECRET means verification
+//     is misconfigured; computing HMAC with an empty key would accept any forged
+//     event, so we reject unconditionally. Non-dev enforces ≥32 chars at boot
+//     (validateEventHMAC); this is defense-in-depth at the function level.
+//     Dev callers must set EVENT_HMAC_SECRET or all events are dropped.
 //   - env.Signature is empty
 //   - HMAC comparison fails
-//   - secret is empty (dev-mode callers should skip verification or use a stub)
 func VerifyStatusChangedSignature(env *SignedEventEnvelope, data *KYCStatusChangedData, secret []byte) bool {
+	if len(secret) == 0 {
+		return false
+	}
+
 	if env.Signature == "" {
 		return false
 	}
