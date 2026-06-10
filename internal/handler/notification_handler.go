@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -32,7 +33,7 @@ type notificationResponse struct {
 	Type          domain.NotificationType `json:"type"`
 	Title         string                  `json:"title"`
 	Body          string                  `json:"body"`
-	Data          any                     `json:"data,omitempty"`
+	Data          json.RawMessage         `json:"data,omitempty"`
 	SourceEventID *uuid.UUID              `json:"sourceEventId,omitempty"`
 	ReadAt        *string                 `json:"readAt,omitempty"` // RFC3339 or null
 	CreatedAt     string                  `json:"createdAt"`        // RFC3339
@@ -54,7 +55,7 @@ func toResponse(n *domain.Notification) notificationResponse {
 	}
 
 	if len(n.Data) > 0 {
-		r.Data = n.Data
+		r.Data = json.RawMessage(n.Data)
 	}
 
 	return r

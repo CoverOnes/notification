@@ -167,6 +167,7 @@ func (c *Consumer) handle(ctx context.Context, msg *redis.Message) {
 			"consumer: cannot map event to notification; skipping",
 			"channel", msg.Channel,
 			"event_id", env.EventID,
+			"drop_reason", "mapping_failed",
 			"err", err,
 		)
 
