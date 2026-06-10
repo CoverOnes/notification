@@ -47,6 +47,10 @@ func MapKYCStatusChanged(env EventEnvelope, data *KYCStatusChangedData) (*Notifi
 		return nil, fmt.Errorf("kyc.status_changed: missing userId")
 	}
 
+	if env.EventID == uuid.Nil {
+		return nil, fmt.Errorf("kyc.status_changed: missing eventId")
+	}
+
 	eid := env.EventID
 
 	var title, body string
@@ -86,6 +90,10 @@ func mapKYCTierChanged(env EventEnvelope) (*Notification, error) {
 		return nil, fmt.Errorf("kyc.tier_changed: missing userId")
 	}
 
+	if env.EventID == uuid.Nil {
+		return nil, fmt.Errorf("kyc.tier_changed: missing eventId")
+	}
+
 	eid := env.EventID
 
 	return &Notification{
@@ -109,6 +117,10 @@ func mapUserSuspended(env EventEnvelope) (*Notification, error) {
 
 	if d.UserID == uuid.Nil {
 		return nil, fmt.Errorf("user.suspended: missing userId")
+	}
+
+	if env.EventID == uuid.Nil {
+		return nil, fmt.Errorf("user.suspended: missing eventId")
 	}
 
 	eid := env.EventID
@@ -136,6 +148,10 @@ func mapBidReceived(env EventEnvelope) (*Notification, error) {
 		return nil, fmt.Errorf("marketplace.bid_received: missing userId")
 	}
 
+	if env.EventID == uuid.Nil {
+		return nil, fmt.Errorf("marketplace.bid_received: missing eventId")
+	}
+
 	eid := env.EventID
 
 	return &Notification{
@@ -159,6 +175,10 @@ func mapBidAccepted(env EventEnvelope) (*Notification, error) {
 
 	if d.UserID == uuid.Nil {
 		return nil, fmt.Errorf("marketplace.bid_accepted: missing userId")
+	}
+
+	if env.EventID == uuid.Nil {
+		return nil, fmt.Errorf("marketplace.bid_accepted: missing eventId")
 	}
 
 	eid := env.EventID
@@ -186,6 +206,10 @@ func mapMilestoneReached(env EventEnvelope) (*Notification, error) {
 		return nil, fmt.Errorf("workspace.milestone_reached: missing userId")
 	}
 
+	if env.EventID == uuid.Nil {
+		return nil, fmt.Errorf("workspace.milestone_reached: missing eventId")
+	}
+
 	eid := env.EventID
 
 	return &Notification{
@@ -209,6 +233,10 @@ func mapContractSigned(env EventEnvelope) (*Notification, error) {
 
 	if d.UserID == uuid.Nil {
 		return nil, fmt.Errorf("workspace.contract_signed: missing userId")
+	}
+
+	if env.EventID == uuid.Nil {
+		return nil, fmt.Errorf("workspace.contract_signed: missing eventId")
 	}
 
 	eid := env.EventID

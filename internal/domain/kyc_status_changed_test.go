@@ -244,6 +244,21 @@ func TestMapKYCStatusChanged(t *testing.T) {
 			wantErr:     true,
 			errContains: "missing userId",
 		},
+		{
+			name: "zero eventId → error",
+			env: domain.EventEnvelope{
+				EventID:    uuid.Nil, // zero UUID — simulates missing eventId in payload
+				OccurredAt: time.Now().UTC(),
+				Version:    1,
+			},
+			data: domain.KYCStatusChangedData{
+				UserID:    userID,
+				NewStatus: "APPROVED",
+				NewTier:   1,
+			},
+			wantErr:     true,
+			errContains: "missing eventId",
+		},
 	}
 
 	for _, tc := range tests {

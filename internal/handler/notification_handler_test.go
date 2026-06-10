@@ -201,6 +201,98 @@ func TestNotificationHandler_MarkRead_InvalidUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+// TestNotificationHandler_List_DataFieldIsJSONObject asserts that the `data` field
+// in the list response serializes as a JSON object (not a base64-encoded string).
+// Regression test for audit finding: internal/handler/notification_handler.go:35,57 —
+// assigning []byte to `any` causes encoding/json to emit base64; the fix is
+// json.RawMessage so the JSON is passed through verbatim.
+func TestNotificationHandler_List_DataFieldIsJSONObject(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     []byte
+		wantNil  bool
+		wantJSON string // expected value of "data" key in the first item
+	}{
+		{
+			name:     "non-nil data renders as JSON object not base64",
+			data:     []byte(`{"newTier":3,"oldTier":1}`),
+			wantNil:  false,
+			wantJSON: `{"newTier":3,"oldTier":1}`,
+		},
+		{
+			name:    "nil data omitted from response",
+			data:    nil,
+			wantNil: true,
+		},
+		{
+			name:    "empty data omitted from response",
+			data:    []byte{},
+			wantNil: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			userID := uuid.New()
+			eid := uuid.New()
+			n := &domain.Notification{
+				ID:            uuid.New(),
+				UserID:        userID,
+				Type:          domain.NotificationTypeKYCTierChanged,
+				Title:         "KYC Level Updated",
+				Body:          "Your KYC level has been updated.",
+				Data:          tc.data,
+				SourceEventID: &eid,
+				CreatedAt:     time.Now().UTC(),
+			}
+
+			fs := &fakeStore{notifications: []*domain.Notification{n}}
+			engine := buildRouter(fs)
+
+			req := httptest.NewRequestWithContext(
+				context.Background(),
+				http.MethodGet,
+				"/v1/me/notifications",
+				http.NoBody,
+			)
+			req.Header.Set("X-User-Id", userID.String())
+			req.Header.Set("X-Kyc-Tier", "0")
+
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, req)
+
+			require.Equal(t, http.StatusOK, w.Code)
+
+			var envelope struct {
+				Data struct {
+					Items []struct {
+						Data json.RawMessage `json:"data"`
+					} `json:"items"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &envelope))
+			require.Len(t, envelope.Data.Items, 1)
+
+			item := envelope.Data.Items[0]
+
+			if tc.wantNil {
+				// data field must be absent (omitempty); json.RawMessage zero value is nil
+				assert.Nil(t, item.Data, "data field must be omitted when notification has no data")
+				return
+			}
+
+			// data must be a JSON object, never a base64 string.
+			// A base64 string would start with '"'; an object starts with '{'.
+			require.NotNil(t, item.Data)
+			assert.Equal(t, byte('{'), item.Data[0],
+				"data field must be a JSON object literal, not a base64-encoded string; got: %s", string(item.Data))
+
+			// Verify the full JSON round-trips correctly.
+			assert.JSONEq(t, tc.wantJSON, string(item.Data))
+		})
+	}
+}
+
 func TestNotificationHandler_List_CursorValidation(t *testing.T) {
 	tests := []struct {
 		name       string

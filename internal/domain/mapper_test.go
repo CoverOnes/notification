@@ -25,6 +25,65 @@ func makeEnvelope(t *testing.T, data any) domain.EventEnvelope {
 	}
 }
 
+// TestMapEventToNotification_EventIDGuard asserts that each inbox mapper rejects
+// events with a zero/missing eventId (uuid.Nil). This prevents silent notification
+// loss through the idempotency unique index ON CONFLICT DO NOTHING:
+// a missing eventId unmarshals to uuid.Nil, which the partial unique index
+// treats as a real non-NULL value — the first event for a user inserts,
+// and every subsequent missing-eventId event for that same user is silently dropped.
+func TestMapEventToNotification_EventIDGuard(t *testing.T) {
+	userID := uuid.New()
+
+	channels := []struct {
+		channel string
+		data    any
+	}{
+		{
+			channel: "kyc.tier_changed",
+			data:    domain.KYCTierChangedData{UserID: userID, OldTier: 0, NewTier: 1},
+		},
+		{
+			channel: "user.suspended",
+			data:    domain.UserSuspendedData{UserID: userID, Reason: "terms_violation"},
+		},
+		{
+			channel: "marketplace.bid_received",
+			data:    domain.BidReceivedData{UserID: userID, BidID: uuid.New(), ListingID: uuid.New()},
+		},
+		{
+			channel: "marketplace.bid_accepted",
+			data:    domain.BidAcceptedData{UserID: userID, BidID: uuid.New(), ListingID: uuid.New()},
+		},
+		{
+			channel: "workspace.milestone_reached",
+			data:    domain.MilestoneReachedData{UserID: userID, ContractID: uuid.New(), MilestoneID: uuid.New()},
+		},
+		{
+			channel: "workspace.contract_signed",
+			data:    domain.ContractSignedData{UserID: userID, ContractID: uuid.New()},
+		},
+	}
+
+	for _, ch := range channels {
+		t.Run(ch.channel+": zero eventId returns error", func(t *testing.T) {
+			rawData, err := json.Marshal(ch.data)
+			require.NoError(t, err)
+
+			env := domain.EventEnvelope{
+				EventID:    uuid.Nil, // zero UUID — simulates missing eventId in Redis payload
+				OccurredAt: time.Now().UTC(),
+				Version:    1,
+				Data:       rawData,
+			}
+
+			n, mapErr := domain.MapEventToNotification(ch.channel, env)
+			require.Error(t, mapErr, "mapper must reject zero eventId for channel %s", ch.channel)
+			assert.Contains(t, mapErr.Error(), "missing eventId")
+			assert.Nil(t, n)
+		})
+	}
+}
+
 func TestMapEventToNotification(t *testing.T) {
 	userID := uuid.New()
 
