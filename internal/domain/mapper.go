@@ -17,6 +17,13 @@ import (
 // handles it separately via handleKYCStatusChanged (HMAC-verified before mapping)
 // and calls MapKYCStatusChanged directly with pre-parsed typed data.
 func MapEventToNotification(channel string, env EventEnvelope) (*Notification, error) {
+	// Defense-in-depth: ensure the raw event data is valid JSON before any mapper
+	// stores it verbatim as Notification.Data (served to clients as json.RawMessage).
+	// The jsonb column also enforces validity on write; reject early and explicitly.
+	if !json.Valid(env.Data) {
+		return nil, fmt.Errorf("%s: data field is not valid JSON", channel)
+	}
+
 	switch channel {
 	case "kyc.tier_changed":
 		return mapKYCTierChanged(env)
