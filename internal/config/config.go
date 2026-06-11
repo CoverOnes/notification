@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
 
@@ -106,6 +107,9 @@ type CommsConfig struct {
 
 // Load reads configuration from environment variables (prefix NOTIFICATION_).
 func Load() (*Config, error) {
+	_ = godotenv.Load(".env.local") // local dev/test (optional, does not override existing env)
+	_ = godotenv.Load(".env")       // prod fallback (optional, does not override existing env)
+
 	v := viper.New()
 
 	v.SetEnvPrefix("NOTIFICATION")
