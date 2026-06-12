@@ -77,7 +77,7 @@ func NewRouter(cfg *RouterConfig) *gin.Engine {
 	// (dev) this is a no-op passthrough, matching the gateway's dev signing-skip.
 	// NOTE: do NOT add VerifyGatewaySignature to /v1/comms/* — that group is
 	// S2S-only (X-Service-Token) and is intentionally NOT proxied from the gateway.
-	api.Use(middleware.VerifyGatewaySignature(cfg.GatewayHMACSecret))
+	api.Use(middleware.VerifyGatewaySignature(cfg.GatewayHMACSecret, cfg.Redis))
 	api.Use(middleware.RequireValidIdentity())
 
 	// Per-authenticated-user rate limiter — mounted AFTER VerifyGatewaySignature +
