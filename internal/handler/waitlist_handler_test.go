@@ -81,11 +81,10 @@ func TestWaitlistHandler_Capture(t *testing.T) {
 			wantOK:     true,
 		},
 		{
-			name:       "duplicate email — same 202 (privacy, no enumeration)",
-			body:       map[string]string{"email": "dup@example.com"},
+			name:       "first submission of email — 202 ok",
+			body:       map[string]string{"email": "first@example.com"},
 			wantStatus: http.StatusAccepted,
 			wantOK:     true,
-			// We'll call twice in the subtest body; both must be 202
 		},
 		{
 			name:       "missing email field — 400 VALIDATION_ERROR",
@@ -163,6 +162,13 @@ func TestWaitlistHandler_Capture(t *testing.T) {
 		{
 			name:       "non-JSON body — 400 VALIDATION_ERROR",
 			body:       "plain text body",
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "VALIDATION_ERROR",
+		},
+		// M-1: multiple @ signs rejected by domain layer
+		{
+			name:       "email with multiple @ signs — 400 VALIDATION_ERROR",
+			body:       map[string]string{"email": "a@b@c.com"},
 			wantStatus: http.StatusBadRequest,
 			wantCode:   "VALIDATION_ERROR",
 		},
@@ -248,6 +254,38 @@ func TestWaitlistHandler_DuplicatePrivacy(t *testing.T) {
 
 	// Both responses must be identical — no "already registered" hint.
 	assert.Equal(t, first.Body.String(), second.Body.String(), "response bodies must be identical for privacy")
+}
+
+func TestWaitlistHandler_OversizedBodyRejected(t *testing.T) {
+	// Verifies that the 8 KB MaxBytesReader cap in the handler is enforced.
+	// A body larger than 8192 bytes must be rejected before the JSON decoder
+	// ever processes it, preventing DoS via large payloads.
+	s := newFakeWaitlistStore()
+	engine := buildWaitlistEngine(s)
+
+	// Build a body that is just over 8 KB. The JSON key "email" + value padding
+	// ensures the body itself is valid JSON structure but too large.
+	oversized := `{"email":"` + strings.Repeat("a", 8200) + `@x.com"}`
+
+	req := httptest.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		"/v1/waitlist",
+		strings.NewReader(oversized),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	// MaxBytesReader causes ShouldBindJSON to fail → handler returns 400.
+	assert.Equal(t, http.StatusBadRequest, w.Code, "body exceeding 8 KB must be rejected with 400")
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	errObj, ok := body["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "VALIDATION_ERROR", errObj["code"])
 }
 
 func TestWaitlistHandler_NoAuthRequired(t *testing.T) {

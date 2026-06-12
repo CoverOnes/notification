@@ -72,11 +72,15 @@ func NewRouter(cfg *RouterConfig) *gin.Engine {
 	r.Use(ipRL.Handler())
 
 	// Public waitlist capture — NO auth required, registered before the identity-
-	// protected groups. The IP rate limiter above still applies.
+	// protected groups. The global IP limiter above still applies; additionally a
+	// dedicated tighter limiter (5 req/min per IP) prevents table-fill DoS from
+	// bots spread across many IPs. Without this, N IPs × 120 shared-limit =
+	// unbounded inserts on a table with no TTL (backend-security-design §5.3).
 	// Gateway must add a passthrough rule for POST /v1/waitlist (separate task).
 	if cfg.WaitlistStore != nil {
 		waitlistH := NewWaitlistHandler(cfg.WaitlistStore)
-		r.POST("/v1/waitlist", waitlistH.Capture)
+		waitlistRL := middleware.NewIPRateLimiter(cfg.Redis, 5, time.Minute)
+		r.POST("/v1/waitlist", waitlistRL.Handler(), waitlistH.Capture)
 	}
 
 	// Notification endpoints — all require valid identity (tier 0).

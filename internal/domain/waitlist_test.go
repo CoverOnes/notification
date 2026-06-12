@@ -11,13 +11,15 @@ import (
 
 func TestNewWaitlistEntry(t *testing.T) {
 	tests := []struct {
-		name         string
-		email        string
-		company      string
-		interestedIn string
-		source       string
-		wantErr      error
-		wantEmailOut string // expected normalized email (trimmed)
+		name            string
+		email           string
+		company         string
+		interestedIn    string
+		source          string
+		wantErr         error
+		wantEmailOut    string // expected normalized email (trimmed)
+		wantCompanyNil  bool   // when true, assert entry.Company == nil
+		wantInterestNil bool   // when true, assert entry.InterestedIn == nil
 	}{
 		// Happy paths
 		{
@@ -135,6 +137,56 @@ func TestNewWaitlistEntry(t *testing.T) {
 			interestedIn: strings.Repeat("b", 201),
 			wantErr:      domain.ErrWaitlistInvalidInput,
 		},
+
+		// M-1: multiple @ signs must be rejected
+		{
+			name:    "email with multiple @ signs returns ErrWaitlistInvalidEmail",
+			email:   "a@b@c.com",
+			wantErr: domain.ErrWaitlistInvalidEmail,
+		},
+
+		// S-2: DEL (0x7F) must be rejected
+		{
+			name:    "email with DEL char (0x7F) returns ErrWaitlistInvalidInput",
+			email:   "user\x7f@example.com",
+			wantErr: domain.ErrWaitlistInvalidInput,
+		},
+		{
+			name:    "company with DEL char (0x7F) returns ErrWaitlistInvalidInput",
+			email:   "ok@example.com",
+			company: "Acme\x7fCorp",
+			wantErr: domain.ErrWaitlistInvalidInput,
+		},
+
+		// S-1: source field length cap
+		{
+			name:         "source at exactly 200 runes is accepted",
+			email:        "ok@example.com",
+			source:       strings.Repeat("s", 200),
+			wantEmailOut: "ok@example.com",
+		},
+		{
+			name:    "source exceeds 200 runes returns ErrWaitlistInvalidInput",
+			email:   "ok@example.com",
+			source:  strings.Repeat("s", 201),
+			wantErr: domain.ErrWaitlistInvalidInput,
+		},
+
+		// reviewer: whitespace-only optional fields treated as absent (nil pointer)
+		{
+			name:           "whitespace-only company is treated as absent",
+			email:          "ok@example.com",
+			company:        "   ",
+			wantEmailOut:   "ok@example.com",
+			wantCompanyNil: true,
+		},
+		{
+			name:            "whitespace-only interestedIn is treated as absent",
+			email:           "ok@example.com",
+			interestedIn:    "   ",
+			wantEmailOut:    "ok@example.com",
+			wantInterestNil: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -155,6 +207,14 @@ func TestNewWaitlistEntry(t *testing.T) {
 			assert.NotEmpty(t, entry.ID)
 			// CreatedAt must be set.
 			assert.False(t, entry.CreatedAt.IsZero())
+
+			if tc.wantCompanyNil {
+				assert.Nil(t, entry.Company, "whitespace-only company must yield nil pointer")
+			}
+
+			if tc.wantInterestNil {
+				assert.Nil(t, entry.InterestedIn, "whitespace-only interestedIn must yield nil pointer")
+			}
 		})
 	}
 }

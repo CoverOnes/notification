@@ -34,7 +34,7 @@ const maxEmailLen = 320
 const maxFieldLen = 200
 
 // controlCharCheck returns true if the string contains any ASCII control character
-// below 0x20 (excluding tab) or contains \r or \n.
+// below 0x20 (excluding tab), the DEL character (0x7F), \r, \n, or a null byte.
 // Per backend-security-design §5.4 and §2.1.
 func controlCharCheck(s string) bool {
 	for _, r := range s {
@@ -45,22 +45,54 @@ func controlCharCheck(s string) bool {
 		if r < 0x20 && r != '\t' {
 			return true
 		}
+
+		if r == 0x7F { // DEL
+			return true
+		}
 	}
 
 	return false
 }
 
-// containsAt returns true if the string contains exactly one @ with non-empty
-// local and domain parts (basic RFC sanity check).
+// containsAt returns true if the string contains exactly one @ with a non-empty
+// local part (before @) and a domain part (after @) that contains a dot.
+// Multiple @ signs are rejected: "a@b@c.com" is invalid even though LastIndex
+// would have found a well-formed domain on the right side.
 func containsAt(s string) bool {
-	idx := strings.LastIndex(s, "@")
+	idx := strings.Index(s, "@")
 	if idx <= 0 {
+		return false
+	}
+
+	// Reject multiple @ signs — e.g. "a@b@c.com".
+	if strings.Contains(s[idx+1:], "@") {
 		return false
 	}
 
 	domain := s[idx+1:]
 
 	return domain != "" && strings.Contains(domain, ".")
+}
+
+// validateTextField trims a raw optional field and returns a non-nil pointer only
+// when the trimmed value is non-empty, valid (no control chars), and within the
+// rune length cap. Whitespace-only input is treated as absent (returns nil, nil).
+func validateTextField(raw string) (*string, error) {
+	v := strings.TrimSpace(raw)
+
+	if v == "" {
+		return nil, nil
+	}
+
+	if controlCharCheck(v) {
+		return nil, ErrWaitlistInvalidInput
+	}
+
+	if utf8.RuneCountInString(v) > maxFieldLen {
+		return nil, ErrWaitlistInvalidInput
+	}
+
+	return &v, nil
 }
 
 // NewWaitlistEntry validates and normalises raw input, returning a ready-to-persist
@@ -91,42 +123,18 @@ func NewWaitlistEntry(rawEmail, rawCompany, rawInterestedIn, source string) (*Wa
 		CreatedAt: time.Now().UTC(),
 	}
 
-	if rawCompany != "" {
-		company := strings.TrimSpace(rawCompany)
+	var err error
 
-		if controlCharCheck(company) {
-			return nil, ErrWaitlistInvalidInput
-		}
-
-		if utf8.RuneCountInString(company) > maxFieldLen {
-			return nil, ErrWaitlistInvalidInput
-		}
-
-		w.Company = &company
+	if w.Company, err = validateTextField(rawCompany); err != nil {
+		return nil, err
 	}
 
-	if rawInterestedIn != "" {
-		interestedIn := strings.TrimSpace(rawInterestedIn)
-
-		if controlCharCheck(interestedIn) {
-			return nil, ErrWaitlistInvalidInput
-		}
-
-		if utf8.RuneCountInString(interestedIn) > maxFieldLen {
-			return nil, ErrWaitlistInvalidInput
-		}
-
-		w.InterestedIn = &interestedIn
+	if w.InterestedIn, err = validateTextField(rawInterestedIn); err != nil {
+		return nil, err
 	}
 
-	if source != "" {
-		src := strings.TrimSpace(source)
-
-		if controlCharCheck(src) {
-			return nil, ErrWaitlistInvalidInput
-		}
-
-		w.Source = &src
+	if w.Source, err = validateTextField(source); err != nil {
+		return nil, err
 	}
 
 	return w, nil
