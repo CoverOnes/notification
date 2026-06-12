@@ -36,7 +36,9 @@ type RouterConfig struct {
 	// CommsService is nil, NO comms routes and NO S2S middleware are registered
 	// (the module is dormant and the service behaves exactly as before).
 	CommsService comms.CommsService
-	S2SToken     string
+	// S2STokenMap is the per-caller token map (serviceID → token) parsed from
+	// NOTIFICATION_S2S_TOKENS. Each caller has an independently rotatable token.
+	S2STokenMap map[string]string
 }
 
 // NewRouter builds and returns the configured Gin engine.
@@ -107,7 +109,7 @@ func NewRouter(cfg *RouterConfig) *gin.Engine {
 		commsRL := middleware.NewServiceRateLimiter(cfg.Redis, 300, time.Minute)
 
 		commsGroup := r.Group("/v1/comms")
-		commsGroup.Use(middleware.RequireServiceIdentity(cfg.S2SToken))
+		commsGroup.Use(middleware.RequireServiceIdentity(cfg.S2STokenMap))
 		commsGroup.Use(commsRL.Handler())
 
 		commsGroup.POST("/send", commsH.Send)

@@ -165,18 +165,18 @@ func TestConfig_validateComms(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "comms enabled in dev with stub providers + token is valid",
-			envs: merge(baseEnv(), map[string]string{
+			name: "comms enabled in dev with stub providers + token map is valid",
+			envs: merge(baseEnv(), map[string]string{ //nolint:gosec // G101: "dev-token" is a fake placeholder, not a real credential
 				"NOTIFICATION_ENV":            "development",
 				"NOTIFICATION_COMMS_ENABLED":  "true",
-				"NOTIFICATION_S2S_TOKEN":      "dev-token",
+				"NOTIFICATION_S2S_TOKENS":     "user-service:dev-token",
 				"NOTIFICATION_EMAIL_PROVIDER": "stub",
 				"NOTIFICATION_SMS_PROVIDER":   "stub",
 			}),
 			wantErr: false,
 		},
 		{
-			name: "comms enabled without S2S token fails",
+			name: "comms enabled without S2S tokens fails",
 			envs: merge(baseEnv(), map[string]string{
 				"NOTIFICATION_ENV":            "development",
 				"NOTIFICATION_COMMS_ENABLED":  "true",
@@ -184,14 +184,26 @@ func TestConfig_validateComms(t *testing.T) {
 				"NOTIFICATION_SMS_PROVIDER":   "stub",
 			}),
 			wantErr:     true,
-			errContains: "NOTIFICATION_S2S_TOKEN is required",
+			errContains: "NOTIFICATION_S2S_TOKENS is required",
+		},
+		{
+			name: "comms enabled with malformed token map entry fails",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV":            "development",
+				"NOTIFICATION_COMMS_ENABLED":  "true",
+				"NOTIFICATION_S2S_TOKENS":     "no-colon-here",
+				"NOTIFICATION_EMAIL_PROVIDER": "stub",
+				"NOTIFICATION_SMS_PROVIDER":   "stub",
+			}),
+			wantErr:     true,
+			errContains: "invalid entry",
 		},
 		{
 			name: "non-dev rejects stub email provider",
 			envs: merge(baseEnv(), map[string]string{
 				"NOTIFICATION_ENV":                 "production",
 				"NOTIFICATION_COMMS_ENABLED":       "true",
-				"NOTIFICATION_S2S_TOKEN":           validToken,
+				"NOTIFICATION_S2S_TOKENS":          "user-service:" + validToken,
 				"EVENT_HMAC_SECRET":                validHMAC,
 				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
 				"NOTIFICATION_EMAIL_PROVIDER":      "stub",
@@ -206,7 +218,7 @@ func TestConfig_validateComms(t *testing.T) {
 			envs: merge(baseEnv(), map[string]string{
 				"NOTIFICATION_ENV":                 "production",
 				"NOTIFICATION_COMMS_ENABLED":       "true",
-				"NOTIFICATION_S2S_TOKEN":           validToken,
+				"NOTIFICATION_S2S_TOKENS":          "user-service:" + validToken,
 				"EVENT_HMAC_SECRET":                validHMAC,
 				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
 				"NOTIFICATION_EMAIL_PROVIDER":      "smtp",
@@ -221,7 +233,7 @@ func TestConfig_validateComms(t *testing.T) {
 			envs: merge(baseEnv(), map[string]string{
 				"NOTIFICATION_ENV":                 "production",
 				"NOTIFICATION_COMMS_ENABLED":       "true",
-				"NOTIFICATION_S2S_TOKEN":           validToken,
+				"NOTIFICATION_S2S_TOKENS":          "user-service:" + validToken,
 				"EVENT_HMAC_SECRET":                validHMAC,
 				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
 				"NOTIFICATION_EMAIL_PROVIDER":      "smtp",
@@ -234,11 +246,11 @@ func TestConfig_validateComms(t *testing.T) {
 			errContains: "NOTIFICATION_SMS_API_KEY and NOTIFICATION_SMS_API_SECRET are required",
 		},
 		{
-			name: "non-dev short S2S token fails",
-			envs: merge(baseEnv(), map[string]string{
+			name: "non-dev short S2S token in map fails",
+			envs: merge(baseEnv(), map[string]string{ //nolint:gosec // G101: "short" is a weak token testing length validation, not a real credential
 				"NOTIFICATION_ENV":                 "production",
 				"NOTIFICATION_COMMS_ENABLED":       "true",
-				"NOTIFICATION_S2S_TOKEN":           "short",
+				"NOTIFICATION_S2S_TOKENS":          "user-service:short",
 				"EVENT_HMAC_SECRET":                validHMAC,
 				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
 				"NOTIFICATION_EMAIL_PROVIDER":      "smtp",
@@ -248,14 +260,30 @@ func TestConfig_validateComms(t *testing.T) {
 				"NOTIFICATION_SMS_REGION":          "ap-southeast-1",
 			}),
 			wantErr:     true,
-			errContains: "NOTIFICATION_S2S_TOKEN must be at least",
+			errContains: "must be at least",
 		},
 		{
-			name: "non-dev fully-configured smtp + aws-sns is valid",
+			name: "non-dev fully-configured smtp + aws-sns + valid token map is valid",
 			envs: merge(baseEnv(), map[string]string{
 				"NOTIFICATION_ENV":                 "production",
 				"NOTIFICATION_COMMS_ENABLED":       "true",
-				"NOTIFICATION_S2S_TOKEN":           validToken,
+				"NOTIFICATION_S2S_TOKENS":          "user-service:" + validToken,
+				"EVENT_HMAC_SECRET":                validHMAC,
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
+				"NOTIFICATION_EMAIL_PROVIDER":      "smtp",
+				"NOTIFICATION_EMAIL_SMTP_HOST":     "smtp.example.com",
+				"NOTIFICATION_EMAIL_SMTP_FROM":     "no-reply@example.com",
+				"NOTIFICATION_SMS_PROVIDER":        "aws-sns",
+				"NOTIFICATION_SMS_REGION":          "ap-southeast-1",
+			}),
+			wantErr: false,
+		},
+		{
+			name: "non-dev multiple callers in token map all valid",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_COMMS_ENABLED":       "true",
+				"NOTIFICATION_S2S_TOKENS":          "user-service:" + validToken + ",admin-service:this-is-a-32char-min-admin-token-value!",
 				"EVENT_HMAC_SECRET":                validHMAC,
 				"NOTIFICATION_GATEWAY_HMAC_SECRET": validHMAC,
 				"NOTIFICATION_EMAIL_PROVIDER":      "smtp",
@@ -336,6 +364,24 @@ func TestConfig_validateEventHMAC(t *testing.T) {
 			name: "dev: missing EVENT_HMAC_SECRET is allowed",
 			envs: merge(baseEnv(), map[string]string{
 				"NOTIFICATION_ENV": "development",
+			}),
+			wantErr: false,
+		},
+		{
+			name: "non-dev: known dev-constant EVENT_HMAC_SECRET is rejected",
+			envs: merge(baseEnv(), map[string]string{ //nolint:gosec // G101: value is the known-bad dev-constant being tested for rejection, not a real credential
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validGatewayHMAC,
+				"EVENT_HMAC_SECRET":                "dev-shared-event-hmac-secret-min32-0123456789",
+			}),
+			wantErr:     true,
+			errContains: "must not be a known development-default value",
+		},
+		{
+			name: "dev: known dev-constant EVENT_HMAC_SECRET is allowed in dev",
+			envs: merge(baseEnv(), map[string]string{ //nolint:gosec // G101: value is the known-bad dev-constant being tested as allowed in dev, not a real credential
+				"NOTIFICATION_ENV":  "development",
+				"EVENT_HMAC_SECRET": "dev-shared-event-hmac-secret-min32-0123456789",
 			}),
 			wantErr: false,
 		},

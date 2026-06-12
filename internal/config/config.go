@@ -81,9 +81,15 @@ type CommsConfig struct {
 	// Enabled turns the comms module on. Default false (dormant).
 	Enabled bool `mapstructure:"comms_enabled"`
 
-	// S2SToken is the shared bearer token the send API verifies (X-Service-Token).
-	// Required (non-dev) when comms is enabled. Env-only.
-	S2SToken string `mapstructure:"s2s_token"`
+	// S2STokensRaw is the raw comma-separated per-caller token map from the env var
+	// NOTIFICATION_S2S_TOKENS (format: "user-service:<tok>,other-service:<tok>").
+	// Parsed into S2STokenMap at validation time; only S2STokenMap is used at runtime.
+	// Env-only. Required (non-dev) when comms is enabled.
+	S2STokensRaw string `mapstructure:"s2s_tokens_raw"`
+
+	// S2STokenMap is the parsed per-caller token map: serviceID → token.
+	// Built from S2STokensRaw during config validation. Not directly bound to env.
+	S2STokenMap map[string]string `mapstructure:"-"`
 
 	// SendTimeout bounds a single provider send. Default 10s.
 	SendTimeout time.Duration `mapstructure:"comms_send_timeout"`
@@ -133,7 +139,7 @@ func Load() (*Config, error) {
 
 		// Comms module (dormant by default).
 		"comms_enabled":      "NOTIFICATION_COMMS_ENABLED",
-		"s2s_token":          "NOTIFICATION_S2S_TOKEN",
+		"s2s_tokens_raw":     "NOTIFICATION_S2S_TOKENS",
 		"comms_send_timeout": "NOTIFICATION_COMMS_SEND_TIMEOUT",
 
 		"email_provider":      "NOTIFICATION_EMAIL_PROVIDER",
@@ -235,13 +241,20 @@ func (c *Config) validate() error {
 // Below this, brute-force against the shared secret becomes practical.
 const minHMACSecretLen = 32
 
-// minS2STokenLen is the minimum NOTIFICATION_S2S_TOKEN length. Below this a
-// brute-force against the shared send-API token becomes practical.
+// minS2STokenLen is the minimum per-caller token length in NOTIFICATION_S2S_TOKENS.
+// Below this a brute-force against the shared send-API token becomes practical.
 const minS2STokenLen = 24
 
-// validateEventHMAC enforces that EVENT_HMAC_SECRET is present and long enough
-// in non-development environments. The consumer needs it for kyc.status_changed
-// HMAC verification regardless of whether the comms module is enabled.
+// devEventHMACSecret is the publicly-known dev-default value of EVENT_HMAC_SECRET.
+// Any non-dev deployment that boots with this value uses a compromised HMAC key.
+//
+//nolint:gosec // G101: this is the known-bad constant being BLOCKED, not a hardcoded credential
+const devEventHMACSecret = "dev-shared-event-hmac-secret-min32-0123456789"
+
+// validateEventHMAC enforces that EVENT_HMAC_SECRET is present, long enough,
+// and not a known development-default value in non-development environments.
+// The consumer needs it for kyc.status_changed HMAC verification regardless of
+// whether the comms module is enabled.
 func (c *Config) validateEventHMAC() []string {
 	if c.IsDev() {
 		return nil
@@ -249,10 +262,13 @@ func (c *Config) validateEventHMAC() []string {
 
 	var errs []string
 
-	if c.EventHMACSecret == "" {
+	switch {
+	case c.EventHMACSecret == "":
 		errs = append(errs, "EVENT_HMAC_SECRET is required in non-development")
-	} else if len(c.EventHMACSecret) < minHMACSecretLen {
+	case len(c.EventHMACSecret) < minHMACSecretLen:
 		errs = append(errs, fmt.Sprintf("EVENT_HMAC_SECRET must be at least %d characters", minHMACSecretLen))
+	case c.EventHMACSecret == devEventHMACSecret:
+		errs = append(errs, "EVENT_HMAC_SECRET must not be a known development-default value")
 	}
 
 	return errs
@@ -305,19 +321,79 @@ func (c *Config) validateComms() []string {
 		errs = append(errs, "NOTIFICATION_SMS_PROVIDER must be stub|aws-sns|huawei|chunghwa")
 	}
 
-	// S2S token: required when comms is enabled; length-checked in non-dev.
-	switch {
-	case c.Comms.S2SToken == "":
-		errs = append(errs, "NOTIFICATION_S2S_TOKEN is required when comms is enabled")
-	case !dev && len(c.Comms.S2SToken) < minS2STokenLen:
-		errs = append(errs, fmt.Sprintf("NOTIFICATION_S2S_TOKEN must be at least %d characters", minS2STokenLen))
-	}
+	// S2S token map: parse raw env var then validate each entry.
+	errs = append(errs, c.parseAndValidateS2STokens(dev)...)
 
 	// EVENT_HMAC_SECRET is now validated unconditionally for all non-dev environments
 	// by validateEventHMAC() — no duplicate check here.
 
 	if !dev {
 		errs = append(errs, c.validateCommsNonDev(emailProv, smsProv)...)
+	}
+
+	return errs
+}
+
+// parseAndValidateS2STokens parses NOTIFICATION_S2S_TOKENS (comma-separated
+// "service-id:token" pairs) into CommsConfig.S2STokenMap and validates each
+// entry. When comms is enabled:
+//   - In dev:    the raw value must not be empty; short tokens are allowed.
+//   - In non-dev: every token must be ≥ minS2STokenLen chars; empty is rejected.
+func (c *Config) parseAndValidateS2STokens(dev bool) []string {
+	raw := strings.TrimSpace(c.Comms.S2STokensRaw)
+	if raw == "" {
+		return []string{"NOTIFICATION_S2S_TOKENS is required when comms is enabled (format: user-service:<tok>,...)"}
+	}
+
+	tokenMap := make(map[string]string)
+
+	var errs []string
+
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		idx := strings.Index(entry, ":")
+		if idx <= 0 {
+			errs = append(errs, fmt.Sprintf("NOTIFICATION_S2S_TOKENS: invalid entry %q (expected service-id:token)", entry))
+
+			continue
+		}
+
+		serviceID := strings.TrimSpace(entry[:idx])
+		token := entry[idx+1:] // token may contain ':' — use first ':' as delimiter
+
+		if serviceID == "" {
+			errs = append(errs, "NOTIFICATION_S2S_TOKENS: service-id must not be empty")
+
+			continue
+		}
+
+		if token == "" {
+			errs = append(errs, fmt.Sprintf("NOTIFICATION_S2S_TOKENS: token for %q must not be empty", serviceID))
+
+			continue
+		}
+
+		if !dev && len(token) < minS2STokenLen {
+			errs = append(errs, fmt.Sprintf("NOTIFICATION_S2S_TOKENS: token for %q must be at least %d characters", serviceID, minS2STokenLen))
+
+			continue
+		}
+
+		if _, dup := tokenMap[serviceID]; dup {
+			errs = append(errs, fmt.Sprintf("NOTIFICATION_S2S_TOKENS: duplicate service-id %q", serviceID))
+
+			continue
+		}
+
+		tokenMap[serviceID] = token
+	}
+
+	if len(errs) == 0 {
+		c.Comms.S2STokenMap = tokenMap
 	}
 
 	return errs

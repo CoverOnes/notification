@@ -177,7 +177,7 @@ func run() error {
 		UserRateLimitPerMin: cfg.UserRateLimitPerMin,
 		UserRateLimitBurst:  cfg.UserRateLimitBurst,
 		CommsService:        commsSvc,
-		S2SToken:            cfg.Comms.S2SToken,
+		S2STokenMap:         cfg.Comms.S2STokenMap,
 	})
 
 	srv := &http.Server{
