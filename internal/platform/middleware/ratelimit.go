@@ -75,8 +75,17 @@ func (f *fallbackLimiter) allow(key string) bool {
 	return lim.Allow()
 }
 
-// NewIPRateLimiter builds a limiter keyed by client IP.
+// NewIPRateLimiter builds a limiter keyed by client IP using the default
+// "notification:rl:ip" key prefix (the global per-IP limiter).
 func NewIPRateLimiter(rdb *redis.Client, limit int, window time.Duration) *RateLimiter {
+	return NewIPRateLimiterWithPrefix(rdb, limit, window, "notification:rl:ip")
+}
+
+// NewIPRateLimiterWithPrefix builds a limiter keyed by client IP under the given
+// Redis key prefix. Endpoints that need their own rate budget MUST pass a
+// distinct prefix; otherwise two limiters INCR the same Redis key and the
+// smaller limit is silently eaten by the larger limiter's traffic.
+func NewIPRateLimiterWithPrefix(rdb *redis.Client, limit int, window time.Duration, keyPrefix string) *RateLimiter {
 	r := rate.Limit(float64(limit) / window.Seconds())
 
 	return &RateLimiter{
@@ -84,7 +93,7 @@ func NewIPRateLimiter(rdb *redis.Client, limit int, window time.Duration) *RateL
 		limit:  limit,
 		window: window,
 		keyFunc: func(c *gin.Context) string {
-			return fmt.Sprintf("notification:rl:ip:%s", c.ClientIP())
+			return fmt.Sprintf("%s:%s", keyPrefix, c.ClientIP())
 		},
 		fallback: newFallbackLimiter(r, fallbackBurst),
 	}

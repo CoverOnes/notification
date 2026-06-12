@@ -79,7 +79,9 @@ func NewRouter(cfg *RouterConfig) *gin.Engine {
 	// Gateway must add a passthrough rule for POST /v1/waitlist (separate task).
 	if cfg.WaitlistStore != nil {
 		waitlistH := NewWaitlistHandler(cfg.WaitlistStore)
-		waitlistRL := middleware.NewIPRateLimiter(cfg.Redis, 5, time.Minute)
+		// Own Redis key prefix so this 5/min budget is an independent counter and
+		// is not co-consumed by the global 120/min limiter sharing the same IP.
+		waitlistRL := middleware.NewIPRateLimiterWithPrefix(cfg.Redis, 5, time.Minute, "notification:rl:waitlist:ip")
 		r.POST("/v1/waitlist", waitlistRL.Handler(), waitlistH.Capture)
 	}
 
