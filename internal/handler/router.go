@@ -15,9 +15,10 @@ import (
 
 // RouterConfig holds all handler-level dependencies.
 type RouterConfig struct {
-	Store store.NotificationStore
-	Pool  *pgxpool.Pool
-	Redis *redis.Client // may be nil in dev
+	Store         store.NotificationStore
+	WaitlistStore store.WaitlistStore
+	Pool          *pgxpool.Pool
+	Redis         *redis.Client // may be nil in dev
 
 	// GatewayHMACSecret is the §24.1 shared secret used to verify the
 	// gateway-origin identity signature on the /v1/me/notifications group.
@@ -69,6 +70,18 @@ func NewRouter(cfg *RouterConfig) *gin.Engine {
 	// Rate limiter — 120 req/min per IP for all API routes below.
 	ipRL := middleware.NewIPRateLimiter(cfg.Redis, 120, time.Minute)
 	r.Use(ipRL.Handler())
+
+	// Public waitlist capture — NO auth required, registered before the identity-
+	// protected groups. The global IP limiter above still applies; additionally a
+	// dedicated tighter limiter (5 req/min per IP) prevents table-fill DoS from
+	// bots spread across many IPs. Without this, N IPs × 120 shared-limit =
+	// unbounded inserts on a table with no TTL (backend-security-design §5.3).
+	// Gateway must add a passthrough rule for POST /v1/waitlist (separate task).
+	if cfg.WaitlistStore != nil {
+		waitlistH := NewWaitlistHandler(cfg.WaitlistStore)
+		waitlistRL := middleware.NewIPRateLimiter(cfg.Redis, 5, time.Minute)
+		r.POST("/v1/waitlist", waitlistRL.Handler(), waitlistH.Capture)
+	}
 
 	// Notification endpoints — all require valid identity (tier 0).
 	notifH := NewNotificationHandler(cfg.Store)

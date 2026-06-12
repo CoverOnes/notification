@@ -8,6 +8,15 @@ import (
 	"github.com/google/uuid"
 )
 
+// WaitlistStore defines persistence operations for waitlist entries.
+type WaitlistStore interface {
+	// AddToWaitlist inserts a waitlist entry. If a row with the same email
+	// (case-insensitive) already exists the insert is silently skipped.
+	// created reports whether a new row was actually written (true) or
+	// the email was already present (false).
+	AddToWaitlist(ctx context.Context, entry *domain.Waitlist) (created bool, err error)
+}
+
 // ListParams controls pagination for inbox queries.
 type ListParams struct {
 	UserID uuid.UUID

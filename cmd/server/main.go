@@ -127,6 +127,7 @@ func run() error {
 
 	// Store layer.
 	notifStore := postgres.NewNotificationStore(pool)
+	waitlistStore := postgres.NewWaitlistStore(pool)
 
 	// Comms module — DORMANT by default (NOTIFICATION_COMMS_ENABLED=false). When
 	// disabled, commsSvc is nil: no comms routes, no comms event subscription —
@@ -171,6 +172,7 @@ func run() error {
 	// Router.
 	r := handler.NewRouter(&handler.RouterConfig{
 		Store:               notifStore,
+		WaitlistStore:       waitlistStore,
 		Pool:                pool,
 		Redis:               redisClient,
 		GatewayHMACSecret:   cfg.GatewayHMACSecret,
