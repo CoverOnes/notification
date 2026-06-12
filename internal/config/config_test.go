@@ -294,6 +294,45 @@ func TestConfig_validateComms(t *testing.T) {
 			}),
 			wantErr: false,
 		},
+		{
+			// FIX 4: all-commas → every entry is blank after trim → empty tokenMap
+			// with no per-entry errors → service boots with 0 callers → silent 401.
+			name: "comms enabled with all-comma token map fails (FIX 4 empty-map guard)",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV":            "development",
+				"NOTIFICATION_COMMS_ENABLED":  "true",
+				"NOTIFICATION_S2S_TOKENS":     ",,,",
+				"NOTIFICATION_EMAIL_PROVIDER": "stub",
+				"NOTIFICATION_SMS_PROVIDER":   "stub",
+			}),
+			wantErr:     true,
+			errContains: "at least one valid service-id:token pair is required",
+		},
+		{
+			// FIX 5: space after colon — "svc: tok" should store "tok" (trimmed),
+			// not " tok" (with leading space that never matches the caller header).
+			name: "comms enabled with space-after-colon token entry succeeds (FIX 5 token trim)",
+			envs: merge(baseEnv(), map[string]string{ //nolint:gosec // G101: fake test token
+				"NOTIFICATION_ENV":            "development",
+				"NOTIFICATION_COMMS_ENABLED":  "true",
+				"NOTIFICATION_S2S_TOKENS":     "user-service: dev-token",
+				"NOTIFICATION_EMAIL_PROVIDER": "stub",
+				"NOTIFICATION_SMS_PROVIDER":   "stub",
+			}),
+			wantErr: false,
+		},
+		{
+			// FIX 5: token containing a colon is preserved (only first ':' is delimiter).
+			name: "comms enabled with colon-in-token succeeds (FIX 5 first-colon-only delimiter)",
+			envs: merge(baseEnv(), map[string]string{
+				"NOTIFICATION_ENV":            "development",
+				"NOTIFICATION_COMMS_ENABLED":  "true",
+				"NOTIFICATION_S2S_TOKENS":     "user-service:tok:en",
+				"NOTIFICATION_EMAIL_PROVIDER": "stub",
+				"NOTIFICATION_SMS_PROVIDER":   "stub",
+			}),
+			wantErr: false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -384,6 +423,19 @@ func TestConfig_validateEventHMAC(t *testing.T) {
 				"EVENT_HMAC_SECRET": "dev-shared-event-hmac-secret-min32-0123456789",
 			}),
 			wantErr: false,
+		},
+		{
+			// FIX 1: trailing-space bypass — without TrimSpace, "devConstant " has
+			// len≥32 (passes length check) AND != devConstant (bypasses denylist) →
+			// would be accepted as a real secret. TrimSpace must normalise first.
+			name: "non-dev: trailing-space dev-constant EVENT_HMAC_SECRET is rejected (FIX 1 whitespace bypass)",
+			envs: merge(baseEnv(), map[string]string{ //nolint:gosec // G101: known-bad dev-constant with trailing space, not a real credential
+				"NOTIFICATION_ENV":                 "production",
+				"NOTIFICATION_GATEWAY_HMAC_SECRET": validGatewayHMAC,
+				"EVENT_HMAC_SECRET":                "dev-shared-event-hmac-secret-min32-0123456789 ",
+			}),
+			wantErr:     true,
+			errContains: "must not be a known development-default value",
 		},
 	}
 

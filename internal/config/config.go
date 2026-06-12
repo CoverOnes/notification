@@ -122,7 +122,7 @@ func Load() (*Config, error) {
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
-	//nolint:gosec // G101 false positive: these are env-var NAMES (e.g. NOTIFICATION_S2S_TOKEN, EVENT_HMAC_SECRET), not credential values
+	//nolint:gosec // G101 false positive: these are env-var NAMES (e.g. NOTIFICATION_S2S_TOKENS, EVENT_HMAC_SECRET), not credential values
 	bindings := map[string]string{
 		"port":                    "NOTIFICATION_PORT",
 		"postgres_dsn":            "NOTIFICATION_POSTGRES_DSN",
@@ -260,14 +260,18 @@ func (c *Config) validateEventHMAC() []string {
 		return nil
 	}
 
+	// TrimSpace before all checks: os.Getenv does not strip surrounding whitespace,
+	// so a value with a trailing space would bypass the denylist equality check.
+	secret := strings.TrimSpace(c.EventHMACSecret)
+
 	var errs []string
 
 	switch {
-	case c.EventHMACSecret == "":
+	case secret == "":
 		errs = append(errs, "EVENT_HMAC_SECRET is required in non-development")
-	case len(c.EventHMACSecret) < minHMACSecretLen:
+	case len(secret) < minHMACSecretLen:
 		errs = append(errs, fmt.Sprintf("EVENT_HMAC_SECRET must be at least %d characters", minHMACSecretLen))
-	case c.EventHMACSecret == devEventHMACSecret:
+	case secret == devEventHMACSecret:
 		errs = append(errs, "EVENT_HMAC_SECRET must not be a known development-default value")
 	}
 
@@ -363,7 +367,10 @@ func (c *Config) parseAndValidateS2STokens(dev bool) []string {
 		}
 
 		serviceID := strings.TrimSpace(entry[:idx])
-		token := entry[idx+1:] // token may contain ':' — use first ':' as delimiter
+		// TrimSpace the token: an operator may write "svc: tok" with a space after
+		// the colon. Without trimming the stored token gains a leading space that
+		// will never match the caller's header value → silent 401.
+		token := strings.TrimSpace(entry[idx+1:]) // token may contain ':' — use first ':' as delimiter
 
 		if serviceID == "" {
 			errs = append(errs, "NOTIFICATION_S2S_TOKENS: service-id must not be empty")
@@ -390,6 +397,13 @@ func (c *Config) parseAndValidateS2STokens(dev bool) []string {
 		}
 
 		tokenMap[serviceID] = token
+	}
+
+	// FIX 4: all entries were blank/empty-after-trim → map is empty but no error
+	// was accumulated. A service booting with comms enabled but zero valid callers
+	// silently 401s every request. Fail fast instead.
+	if len(tokenMap) == 0 && len(errs) == 0 {
+		errs = append(errs, "NOTIFICATION_S2S_TOKENS: at least one valid service-id:token pair is required")
 	}
 
 	if len(errs) == 0 {
