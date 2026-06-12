@@ -18,23 +18,25 @@ const (
 // RequireServiceIdentity is a deny-by-default service-to-service (S2S) guard for
 // internal-only endpoints (e.g. POST /v1/comms/send). A caller MUST present:
 //
-//	X-Service-Id    — a non-empty caller identifier (recorded for audit)
-//	X-Service-Token — the shared NOTIFICATION_S2S_TOKEN, compared in constant time
+//	X-Service-Id    — the caller's service identifier (used to look up its token)
+//	X-Service-Token — the per-caller token from the tokenMap, compared in constant time
+//
+// tokenMap is a serviceID → token map. Each caller has its own independently
+// rotatable token, so a single compromised credential does not affect other callers.
+//
+// Fail-closed rules:
+//   - nil or empty tokenMap → every request is rejected (unavailable posture)
+//   - unknown X-Service-Id → 401 (not in map)
+//   - empty token in map for a service-id → 401 (misconfiguration treated as deny)
+//   - wrong token → 401
 //
 // This endpoint is an arbitrary-send primitive (a spam relay if exposed to
 // browsers), so the API gateway MUST NOT proxy it from the public edge — it is
 // reachable only over the internal network by trusted services that hold the
-// shared token (backend-security-design §5.5).
-//
-// If expectedToken is empty the guard FAILS CLOSED (every request is rejected) —
-// a missing token must never accidentally open the endpoint. Config validation
-// enforces a non-empty token in non-dev when comms is enabled; this is the
-// runtime backstop.
-func RequireServiceIdentity(expectedToken string) gin.HandlerFunc {
-	expected := []byte(expectedToken)
-
+// per-caller token (backend-security-design §5.5).
+func RequireServiceIdentity(tokenMap map[string]string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if len(expected) == 0 {
+		if len(tokenMap) == 0 {
 			c.Abort()
 			httpx.ErrCode(c, http.StatusUnauthorized, "UNAUTHORIZED", "service authentication unavailable")
 
@@ -44,10 +46,23 @@ func RequireServiceIdentity(expectedToken string) gin.HandlerFunc {
 		serviceID := strings.TrimSpace(c.GetHeader(headerServiceID))
 		token := c.GetHeader(headerServiceToken)
 
-		// Constant-time compare; only accept when the service id is also present so
-		// an audit trail always has a caller.
-		tokenOK := subtle.ConstantTimeCompare([]byte(token), expected) == 1
-		if serviceID == "" || !tokenOK {
+		if serviceID == "" {
+			c.Abort()
+			httpx.ErrCode(c, http.StatusUnauthorized, "UNAUTHORIZED", "service authentication required")
+
+			return
+		}
+
+		expectedToken, known := tokenMap[serviceID]
+		if !known || expectedToken == "" {
+			c.Abort()
+			httpx.ErrCode(c, http.StatusUnauthorized, "UNAUTHORIZED", "service authentication required")
+
+			return
+		}
+
+		// Constant-time compare prevents timing side-channel.
+		if subtle.ConstantTimeCompare([]byte(token), []byte(expectedToken)) != 1 {
 			c.Abort()
 			httpx.ErrCode(c, http.StatusUnauthorized, "UNAUTHORIZED", "service authentication required")
 
