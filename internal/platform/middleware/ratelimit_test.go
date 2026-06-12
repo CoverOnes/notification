@@ -5,11 +5,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/CoverOnes/notification/internal/platform/middleware"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -158,4 +162,65 @@ func TestUserRateLimiter_LRUBoundDoesNotPanic(t *testing.T) {
 			assert.Equal(t, http.StatusOK, w.Code)
 		}
 	})
+}
+
+// hasKeyWithPrefix reports whether any key in keys starts with prefix.
+func hasKeyWithPrefix(keys []string, prefix string) bool {
+	for _, k := range keys {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestIPRateLimiter_WaitlistPrefixIsolatedFromGlobal is a regression test for the
+// shared-Redis-key bug: the global 120/min limiter and the dedicated 5/min
+// waitlist limiter both used the "notification:rl:ip:<IP>" key, so global traffic
+// pre-consumed the waitlist budget and the effective waitlist limit collapsed to
+// ~2-3 instead of 5. With a dedicated key prefix the waitlist limiter keeps its
+// own independent counter.
+func TestIPRateLimiter_WaitlistPrefixIsolatedFromGlobal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	globalRL := middleware.NewIPRateLimiter(rdb, 120, time.Minute)
+	waitlistRL := middleware.NewIPRateLimiterWithPrefix(rdb, 5, time.Minute, "notification:rl:waitlist:ip")
+
+	r := gin.New()
+	r.GET("/global", globalRL.Handler(), func(c *gin.Context) { c.Status(http.StatusOK) })
+	r.POST("/waitlist", waitlistRL.Handler(), func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	fire := func(method, path string) int {
+		req, err := http.NewRequestWithContext(context.Background(), method, path, http.NoBody)
+		require.NoError(t, err)
+		req.RemoteAddr = "203.0.113.7:5555" // fixed client IP shared by both limiters
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		return w.Code
+	}
+
+	// Drive the global limiter past the waitlist limit. If both limiters shared a
+	// Redis key, these 4 hits would pre-consume the waitlist's 5/min budget.
+	for i := range 4 {
+		require.Equal(t, http.StatusOK, fire(http.MethodGet, "/global"), "global hit %d is within the 120/min budget", i+1)
+	}
+
+	// The waitlist limiter must still grant its full independent 5/min budget.
+	for i := range 5 {
+		require.Equal(t, http.StatusOK, fire(http.MethodPost, "/waitlist"), "waitlist hit %d is within its own 5/min budget", i+1)
+	}
+
+	// 6th waitlist request exceeds 5/min → 429.
+	assert.Equal(t, http.StatusTooManyRequests, fire(http.MethodPost, "/waitlist"), "waitlist 6th request must be rate-limited")
+
+	// The two limiters must have written to distinct Redis keys.
+	keys := mr.Keys()
+	assert.True(t, hasKeyWithPrefix(keys, "notification:rl:waitlist:ip:"), "waitlist limiter must use its own prefixed key, got %v", keys)
+	assert.True(t, hasKeyWithPrefix(keys, "notification:rl:ip:"), "global limiter must keep the default key, got %v", keys)
 }
