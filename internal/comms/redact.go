@@ -30,6 +30,12 @@ var credentialPatterns = []struct {
 	{"password-kv", regexp.MustCompile(`(?i)password["']?\s*[=:]\s*["']?[^\s"',&]+`)},
 	{"apikey-kv", regexp.MustCompile(`(?i)api[_-]?key["']?\s*[=:]\s*["']?[^\s"',&]+`)},
 	{"token-kv", regexp.MustCompile(`(?i)(?:secret|(?:access[_-]?|auth[_-]?|bearer[_-]?)?token)["']?\s*[=:]\s*["']?[^\s"',&]+`)},
+	// email: not a credential, but recipient addresses leak into transport errors
+	// as incidental PII — e.g. go-mail's SendError embeds
+	// "affected recipient(s): a@b.com". Redact before any error string is logged or
+	// persisted (GDPR Art. 5(1)(c) data minimisation). Runs last so DSN userinfo
+	// (already consumed by the *-dsn patterns above) is not re-matched here.
+	{"email", regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)},
 }
 
 // RedactSecrets scrubs credential-shaped substrings from s, replacing each with

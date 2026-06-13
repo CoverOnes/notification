@@ -71,6 +71,12 @@ func TestRedactSecrets(t *testing.T) {
 			mustNotIn: "ABCDEF123456",
 			mustHave:  "[REDACTED:apikey-kv]",
 		},
+		{
+			name:      "recipient email (go-mail SendError PII)",
+			in:        "send failed, affected recipient(s): alice@example.com",
+			mustNotIn: "alice@example.com",
+			mustHave:  "[REDACTED:email]",
+		},
 	}
 
 	for _, tc := range tests {
@@ -103,6 +109,17 @@ func TestSanitizeError(t *testing.T) {
 		assert.NotContains(t, out, "\r")
 		assert.NotContains(t, out, "\x00")
 		assert.Contains(t, out, "[REDACTED:token-kv]")
+	})
+
+	t.Run("redacts recipient email from go-mail SendError text", func(t *testing.T) {
+		// Mirrors go-mail's SendError.Error() which embeds the recipient:
+		// "...send failed, affected recipient(s): bob@example.com". This is the exact
+		// PII leak the handler fix guards against — proving SanitizeError closes it.
+		err := errors.New("email/smtp: send: send failed, affected recipient(s): bob@example.com")
+		out := comms.SanitizeError(err)
+
+		assert.NotContains(t, out, "bob@example.com", "recipient PII must be redacted")
+		assert.Contains(t, out, "[REDACTED:email]")
 	})
 
 	t.Run("caps length", func(t *testing.T) {

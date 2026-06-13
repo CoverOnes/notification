@@ -98,13 +98,16 @@ func writeSendError(c *gin.Context, err error) {
 		httpx.ErrCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid send request")
 
 	case comms.IsProviderUnavailable(err):
-		// Log the real error so operators can see what is unavailable.
-		slog.Error("comms send: provider unavailable", "err", err)
+		// Log the real error so operators can see what is unavailable. SanitizeError
+		// redacts credentials AND recipient emails (go-mail's SendError embeds the
+		// affected recipient address) before the string reaches the log — GDPR PII.
+		slog.Error("comms send: provider unavailable", "err", comms.SanitizeError(err))
 		// Do not echo which provider or why — just that delivery is unavailable.
 		httpx.ErrCode(c, http.StatusInternalServerError, "PROVIDER_UNAVAILABLE", "delivery provider is unavailable")
 
 	default:
-		slog.Error("comms send: internal error", "err", err)
+		// SanitizeError redacts credentials + recipient emails before logging (PII).
+		slog.Error("comms send: internal error", "err", comms.SanitizeError(err))
 		httpx.ErrCode(c, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error")
 	}
 }
