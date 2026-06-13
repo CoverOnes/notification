@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -89,6 +90,20 @@ func TestCommsHandler_Send(t *testing.T) {
 			svc:        &fakeCommsService{err: comms.ErrProviderNotIntegrated},
 			wantStatus: http.StatusInternalServerError,
 			wantCode:   "PROVIDER_UNAVAILABLE",
+		},
+		{
+			name:       "template not found → 400 VALIDATION_ERROR",
+			body:       `{"channel":"EMAIL","to":"a@b.com","templateId":"no_such","idempotencyKey":"k2"}`,
+			svc:        &fakeCommsService{err: comms.ErrTemplateNotFound},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "VALIDATION_ERROR",
+		},
+		{
+			name:       "unexpected internal error → 500 INTERNAL_ERROR (no cause leaked)",
+			body:       `{"channel":"EMAIL","to":"a@b.com","templateId":"t","idempotencyKey":"k3"}`,
+			svc:        &fakeCommsService{err: fmt.Errorf("db connection reset")},
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   "INTERNAL_ERROR",
 		},
 	}
 

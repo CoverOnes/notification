@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/CoverOnes/notification/internal/comms"
@@ -86,7 +87,8 @@ func (h *CommsHandler) Send(c *gin.Context) {
 }
 
 // writeSendError maps a comms service error to a stable API code WITHOUT leaking
-// provider internals.
+// provider internals. All 500-class paths are logged at ERROR so the actual
+// root cause is visible in the notification service logs (previously silent).
 func writeSendError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, comms.ErrValidation),
@@ -96,10 +98,16 @@ func writeSendError(c *gin.Context, err error) {
 		httpx.ErrCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid send request")
 
 	case comms.IsProviderUnavailable(err):
+		// Log the real error so operators can see what is unavailable. SanitizeError
+		// redacts credentials AND recipient emails (go-mail's SendError embeds the
+		// affected recipient address) before the string reaches the log — GDPR PII.
+		slog.Error("comms send: provider unavailable", "err", comms.SanitizeError(err))
 		// Do not echo which provider or why — just that delivery is unavailable.
 		httpx.ErrCode(c, http.StatusInternalServerError, "PROVIDER_UNAVAILABLE", "delivery provider is unavailable")
 
 	default:
+		// SanitizeError redacts credentials + recipient emails before logging (PII).
+		slog.Error("comms send: internal error", "err", comms.SanitizeError(err))
 		httpx.ErrCode(c, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error")
 	}
 }
