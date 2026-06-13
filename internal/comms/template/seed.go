@@ -15,8 +15,9 @@ import (
 // any variable the caller does not supply, so the documented vars below are the
 // contract for each template:
 //
-//	email_verify : .verifyURL
-//	phone_otp    : .code .ttlMinutes
+//	email_verify   : .verifyURL
+//	password_reset : .resetURL
+//	phone_otp      : .code .ttlMinutes
 //
 // The email_verify body ports the user service's verification email content
 // (clickable CTA + raw-token fallback). It is HTML — html/template auto-escapes
@@ -33,6 +34,18 @@ var DefaultTemplates = []comms.Template{
 			`<p>If the button does not work, copy this link into your browser:<br>{{.verifyURL}}</p>` +
 			`<p>This link is single-use and expires soon. If you did not create this ` +
 			`account you can safely ignore this message.</p>`,
+	},
+	{
+		Channel:    comms.ChannelEmail,
+		TemplateID: "password_reset",
+		Locale:     "en",
+		Subject:    "Reset your CoverOnes password",
+		Body: `<p>We received a request to reset your CoverOnes password.</p>` +
+			`<p>Click the button below to choose a new password:</p>` +
+			`<p><a href="{{.resetURL}}">Reset my password</a></p>` +
+			`<p>If the button does not work, copy this link into your browser:<br>{{.resetURL}}</p>` +
+			`<p>This link is single-use and expires in 30 minutes. If you did not request ` +
+			`this, you can safely ignore this message — your password will not change.</p>`,
 	},
 	{
 		Channel:    comms.ChannelSMS,
