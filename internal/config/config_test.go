@@ -535,6 +535,95 @@ func TestConfig_validateGatewayHMAC(t *testing.T) {
 	}
 }
 
+// TestConfig_validateGatewayCIDR verifies NOTIFICATION_GATEWAY_CIDR validation:
+// empty is allowed (nil trusted-proxy fallback), a valid CIDR passes, a malformed
+// value is rejected, and wildcard CIDRs (0.0.0.0/0, ::/0) are rejected because
+// trusting all peers lets any client spoof its IP via X-Forwarded-For.
+func TestConfig_validateGatewayCIDR(t *testing.T) {
+	tests := []struct {
+		name        string
+		cidr        string
+		setCIDR     bool // when false, the env var is left unset (empty -> valid)
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:    "empty CIDR is allowed (nil trusted-proxy fallback)",
+			setCIDR: false,
+			wantErr: false,
+		},
+		{
+			name:    "valid IPv4 CIDR passes",
+			cidr:    "10.0.0.0/16",
+			setCIDR: true,
+			wantErr: false,
+		},
+		{
+			name:    "valid IPv6 CIDR passes",
+			cidr:    "fd00::/8",
+			setCIDR: true,
+			wantErr: false,
+		},
+		{
+			name:        "malformed CIDR is rejected",
+			cidr:        "not-a-cidr",
+			setCIDR:     true,
+			wantErr:     true,
+			errContains: "NOTIFICATION_GATEWAY_CIDR must be a valid CIDR block",
+		},
+		{
+			name:        "bare IP without mask is rejected",
+			cidr:        "10.0.0.1",
+			setCIDR:     true,
+			wantErr:     true,
+			errContains: "NOTIFICATION_GATEWAY_CIDR must be a valid CIDR block",
+		},
+		{
+			name:        "IPv4 wildcard 0.0.0.0/0 is rejected",
+			cidr:        "0.0.0.0/0",
+			setCIDR:     true,
+			wantErr:     true,
+			errContains: "NOTIFICATION_GATEWAY_CIDR must not be a wildcard",
+		},
+		{
+			name:        "IPv6 wildcard ::/0 is rejected",
+			cidr:        "::/0",
+			setCIDR:     true,
+			wantErr:     true,
+			errContains: "NOTIFICATION_GATEWAY_CIDR must not be a wildcard",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			envs := merge(baseEnv(), map[string]string{"NOTIFICATION_ENV": "development"})
+			if tc.setCIDR {
+				envs["NOTIFICATION_GATEWAY_CIDR"] = tc.cidr
+			}
+
+			for k, v := range envs {
+				t.Setenv(k, v)
+			}
+
+			cfg, err := config.Load()
+
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.errContains != "" {
+					assert.Contains(t, err.Error(), tc.errContains)
+				}
+				assert.Nil(t, cfg)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+			assert.Equal(t, tc.cidr, cfg.GatewayCIDR)
+		})
+	}
+}
+
 // TestConfig_validateUserRateLimit verifies the per-user rate-limit validation:
 // perMin < 0 is rejected, a positive perMin paired with burst <= 0 is rejected,
 // perMin = 0 (disabled) passes without any burst constraint, and a valid pair passes.
