@@ -178,6 +178,7 @@ func run() error {
 		GatewayHMACSecret:   cfg.GatewayHMACSecret,
 		UserRateLimitPerMin: cfg.UserRateLimitPerMin,
 		UserRateLimitBurst:  cfg.UserRateLimitBurst,
+		GatewayCIDR:         cfg.GatewayCIDR,
 		CommsService:        commsSvc,
 		S2STokenMap:         cfg.Comms.S2STokenMap,
 	})

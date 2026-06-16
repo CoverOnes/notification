@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 	"time"
@@ -69,6 +70,19 @@ type Config struct {
 	// Must be > 0 when UserRateLimitPerMin > 0. Default: 20.
 	// Env: NOTIFICATION_USER_RATE_LIMIT_BURST
 	UserRateLimitBurst int `mapstructure:"user_rate_limit_burst"`
+
+	// GatewayCIDR is the IP CIDR of the API gateway/load-balancer that forwards
+	// requests to this service. When set, Gin is told to trust X-Forwarded-For
+	// only from this source, so c.ClientIP() returns the real end-user IP rather
+	// than the gateway's egress IP. Without it, every request appears to come from
+	// the gateway IP and the per-IP rate limiters collapse to a single global
+	// bucket — including the waitlist 5/min limiter (table-fill DoS self-defeats).
+	// Example: "10.0.0.0/16" (k8s cluster CIDR), "172.16.0.0/12" (VPC internal).
+	// Empty (default): trusted-proxy list is nil — c.ClientIP() returns RemoteAddr
+	// (safe fallback; use when the gateway forwards no X-Forwarded-For, e.g. dev).
+	// NEVER set to "0.0.0.0/0"/"::/0": that lets any client spoof its IP via XFF.
+	// Env: NOTIFICATION_GATEWAY_CIDR
+	GatewayCIDR string `mapstructure:"gateway_cidr"`
 
 	// Comms holds the dormant-by-default outbound-messaging (comms) module config.
 	Comms CommsConfig `mapstructure:",squash"`
@@ -136,6 +150,7 @@ func Load() (*Config, error) {
 		"gateway_hmac_secret":     "NOTIFICATION_GATEWAY_HMAC_SECRET",
 		"user_rate_limit_per_min": "NOTIFICATION_USER_RATE_LIMIT_PER_MIN",
 		"user_rate_limit_burst":   "NOTIFICATION_USER_RATE_LIMIT_BURST",
+		"gateway_cidr":            "NOTIFICATION_GATEWAY_CIDR",
 
 		// Comms module (dormant by default).
 		"comms_enabled":      "NOTIFICATION_COMMS_ENABLED",
@@ -227,6 +242,7 @@ func (c *Config) validate() error {
 
 	errs = append(errs, c.validateEventHMAC()...)
 	errs = append(errs, c.validateGatewayHMAC()...)
+	errs = append(errs, c.validateGatewayCIDR()...)
 	errs = append(errs, c.validateUserRateLimit()...)
 	errs = append(errs, c.validateComms()...)
 
@@ -294,6 +310,34 @@ func (c *Config) validateGatewayHMAC() []string {
 	}
 
 	return errs
+}
+
+// validateGatewayCIDR validates NOTIFICATION_GATEWAY_CIDR and returns any error messages.
+// An empty CIDR is valid (the trusted-proxy list falls back to nil, safe for local dev
+// where the gateway forwards no X-Forwarded-For).
+// A non-empty value must be a valid CIDR block (e.g. "10.0.0.0/16").
+// NEVER set to "0.0.0.0/0" / "::/0" — a wildcard trusts every peer, letting any client
+// spoof its source IP via X-Forwarded-For and defeating per-IP rate limiting.
+func (c *Config) validateGatewayCIDR() []string {
+	if c.GatewayCIDR == "" {
+		return nil
+	}
+
+	_, ipNet, err := net.ParseCIDR(c.GatewayCIDR)
+	if err != nil {
+		return []string{fmt.Sprintf("NOTIFICATION_GATEWAY_CIDR must be a valid CIDR block (e.g. 10.0.0.0/16): %v", err)}
+	}
+
+	// Reject wildcard CIDRs (0.0.0.0/0, ::/0): trusting all peers lets any client
+	// spoof its IP via X-Forwarded-For, collapsing the per-IP rate limiters.
+	if ones, _ := ipNet.Mask.Size(); ones == 0 {
+		return []string{
+			"NOTIFICATION_GATEWAY_CIDR must not be a wildcard (0.0.0.0/0 or ::/0): " +
+				"it lets any client spoof its IP via X-Forwarded-For",
+		}
+	}
+
+	return nil
 }
 
 // validEmailProviders / validSMSProviders are the accepted provider names.

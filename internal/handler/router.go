@@ -33,6 +33,14 @@ type RouterConfig struct {
 	// UserRateLimitBurst is the per-user token-bucket burst allowance.
 	UserRateLimitBurst int
 
+	// GatewayCIDR is the CIDR of the API gateway/LB that forwards requests.
+	// When non-empty, Gin trusts X-Forwarded-For from this source so c.ClientIP()
+	// returns the real end-user IP. This is required for the per-IP rate limiters
+	// (the global 120/min limiter AND the waitlist 5/min limiter) to key per
+	// client rather than collapsing to a single per-gateway bucket.
+	// Empty (dev/unset): SetTrustedProxies(nil) — safe fallback (RemoteAddr).
+	GatewayCIDR string
+
 	// Comms wiring — only set when NOTIFICATION_COMMS_ENABLED is true. When
 	// CommsService is nil, NO comms routes and NO S2S middleware are registered
 	// (the module is dormant and the service behaves exactly as before).
@@ -53,7 +61,28 @@ func NewRouter(cfg *RouterConfig) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 
 	r := gin.New()
-	r.SetTrustedProxies(nil) //nolint:errcheck // nil proxy list disables proxy trust; gin docs confirm error is always nil for nil argument
+
+	// Trust the gateway proxy CIDR so c.ClientIP() returns the real end-user IP
+	// from X-Forwarded-For rather than the gateway's egress IP.
+	//
+	// When GatewayCIDR is set (non-dev): Gin honors X-Forwarded-For only from the
+	// gateway, so the per-IP rate limiters (global 120/min AND waitlist 5/min) key
+	// per client. When GatewayCIDR is empty (dev/unset): SetTrustedProxies(nil)
+	// disables proxy trust entirely — c.ClientIP() returns RemoteAddr (safe fallback).
+	//
+	// We must NOT trust XFF blindly (SetTrustedProxies([]string{"0.0.0.0/0"})) as
+	// that lets any client spoof its IP via the header; config.validateGatewayCIDR
+	// rejects wildcard CIDRs at boot.
+	if cfg.GatewayCIDR != "" {
+		if err := r.SetTrustedProxies([]string{cfg.GatewayCIDR}); err != nil {
+			// SetTrustedProxies only fails on an invalid CIDR, which config.validate()
+			// already rejects at boot. Panic here to surface a config bug fast rather
+			// than silently running without proxy trust.
+			panic("router: invalid GatewayCIDR: " + err.Error())
+		}
+	} else {
+		r.SetTrustedProxies(nil) //nolint:errcheck // nil proxy list disables proxy trust; gin docs confirm error is always nil for nil argument
+	}
 
 	// Global middleware chain (order per CONVENTIONS §9).
 	r.Use(middleware.Recover())
@@ -83,6 +112,11 @@ func NewRouter(cfg *RouterConfig) *gin.Engine {
 		// is not co-consumed by the global 120/min limiter sharing the same IP.
 		waitlistRL := middleware.NewIPRateLimiterWithPrefix(cfg.Redis, 5, time.Minute, "notification:rl:waitlist:ip")
 		r.POST("/v1/waitlist", waitlistRL.Handler(), waitlistH.Capture)
+	} else {
+		// S-3: a nil WaitlistStore silently skips registering POST /v1/waitlist —
+		// requests would 404 with no operator-visible reason. Warn at startup so a
+		// misconfigured/forgotten store dependency is not invisible.
+		slog.Warn("waitlist store is nil; POST /v1/waitlist not registered (waitlist capture disabled)")
 	}
 
 	// Notification endpoints — all require valid identity (tier 0).
