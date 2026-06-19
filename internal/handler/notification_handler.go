@@ -35,8 +35,8 @@ type notificationResponse struct {
 	Body          string                  `json:"body"`
 	Data          json.RawMessage         `json:"data,omitempty"`
 	SourceEventID *uuid.UUID              `json:"sourceEventId,omitempty"`
-	ReadAt        *string                 `json:"readAt,omitempty"` // RFC3339 or null
-	CreatedAt     string                  `json:"createdAt"`        // RFC3339
+	ReadAt        *string                 `json:"readAt"`    // RFC3339 or null; nil serializes as JSON null (not omitted)
+	CreatedAt     string                  `json:"createdAt"` // RFC3339
 }
 
 func toResponse(n *domain.Notification) notificationResponse {
