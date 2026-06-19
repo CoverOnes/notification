@@ -350,3 +350,96 @@ func TestNotificationHandler_List_CursorValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestNotificationHandler_List_ReadAtNullForUnread is a regression test for:
+// https://github.com/CoverOnes/notification/issues/20
+//
+// Root cause: ReadAt *string with json:"readAt,omitempty" caused nil pointer to be
+// omitted from JSON entirely. Frontend checks n.readAt === null (not undefined) to
+// decide "unread". With the field absent, JS sees undefined, undefined===null is
+// false, so the item was treated as already-read and per-item mark-read was skipped.
+//
+// Fix: remove omitempty so nil *string serializes as JSON null (key present).
+func TestNotificationHandler_List_ReadAtNullForUnread(t *testing.T) {
+	tests := []struct {
+		name            string
+		readAt          *time.Time
+		wantReadAtNull  bool   // true → expect key present with null value
+		wantReadAtValue string // non-empty → expect key present with this RFC3339 value prefix
+	}{
+		{
+			name:           "unread notification must have readAt key set to null",
+			readAt:         nil,
+			wantReadAtNull: true,
+		},
+		{
+			name:            "read notification must have readAt key set to RFC3339 timestamp",
+			readAt:          func() *time.Time { t := time.Date(2024, 3, 15, 12, 0, 0, 0, time.UTC); return &t }(),
+			wantReadAtNull:  false,
+			wantReadAtValue: "2024-03-15T12:00:00",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			userID := uuid.New()
+			n := &domain.Notification{
+				ID:        uuid.New(),
+				UserID:    userID,
+				Type:      domain.NotificationTypeKYCTierChanged,
+				Title:     "Test",
+				Body:      "Body",
+				ReadAt:    tc.readAt,
+				CreatedAt: time.Now().UTC(),
+			}
+
+			fs := &fakeStore{notifications: []*domain.Notification{n}}
+			engine := buildRouter(fs)
+
+			req := httptest.NewRequestWithContext(
+				context.Background(),
+				http.MethodGet,
+				"/v1/me/notifications",
+				http.NoBody,
+			)
+			req.Header.Set("X-User-Id", userID.String())
+			req.Header.Set("X-Kyc-Tier", "0")
+
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, req)
+
+			require.Equal(t, http.StatusOK, w.Code)
+
+			// Parse into a raw map to distinguish missing key from null value.
+			var envelope struct {
+				Data struct {
+					Items []map[string]json.RawMessage `json:"items"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &envelope))
+			require.Len(t, envelope.Data.Items, 1)
+
+			item := envelope.Data.Items[0]
+
+			// The readAt key MUST always be present in the JSON output.
+			rawReadAt, keyPresent := item["readAt"]
+			require.True(t, keyPresent, "readAt key must always be present in notification JSON (not omitted)")
+
+			if tc.wantReadAtNull {
+				// Unread: value must be JSON null, not undefined/missing.
+				assert.Equal(t, "null", string(rawReadAt),
+					"unread notification: readAt must be JSON null, got %q", string(rawReadAt))
+			} else {
+				// Read: value must be a non-null RFC3339 timestamp string.
+				assert.NotEqual(t, "null", string(rawReadAt),
+					"read notification: readAt must be a timestamp, not null")
+				// Verify it's a quoted string (starts with '"').
+				require.Greater(t, len(rawReadAt), 0)
+				assert.Equal(t, byte('"'), rawReadAt[0],
+					"read notification: readAt must be a JSON string, got %q", string(rawReadAt))
+				assert.Contains(t, string(rawReadAt), tc.wantReadAtValue,
+					"read notification: readAt must contain expected timestamp prefix")
+			}
+		})
+	}
+}
